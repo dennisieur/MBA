@@ -593,51 +593,54 @@ void hexdump(Monitor *mon, uint8_t* buf, size_t length)
 /*******************************************************************
 char* parse_unicode_strptr(uint64_t ustr_ptr, CPUState *cpu)
 
-Get the memory content in virtual memory
+parse unicode string from address "ustr_ptr", this is at begining of structure _UNICODE_STRING
 
-INPUT:    uint64_t ustr_ptr      unicode structure address
-          CPUState *cpu          Current cpu
-OUTPUT:   char*                  ascii string
+INPUT:    uint64_t ustr_ptr,     the begining address of structure _UNICODE_STRING
+          CPUState *cpu,         the pointer to current cpu
+OUTPUT:   char*                  return the ascii string
 *******************************************************************/
 char* parse_unicode_strptr(uint64_t ustr_ptr, CPUState *cpu)
 {
-    json_object* ustr = NULL;
-    field_info* f_info = NULL;
-    uint16_t length, max_length;
+    int i;
     uint64_t buf_ptr;
-    int offset;
+    uint16_t length = 0,
+             max_length = 0;
     uint8_t *buf;
     char* str;
-    int i;
 
-    ustr = memfrs_q_struct("_UNICODE_STRING");
+    int offset_maxlength_to_unicode,
+        offset_length_to_unicode,
+        offset_buffer_to_unicode;
 
-    f_info = memfrs_q_field(ustr, "MaximumLength");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&max_length, sizeof(max_length), 0 );
-    memfrs_close_field(f_info);
 
-    f_info = memfrs_q_field(ustr, "Length");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&length, sizeof(length), 0 );
-    memfrs_close_field(f_info);
-  
-    if(length == 0 || length > 256 || max_length ==0 || max_length > 256)
+    // Get maximum length
+    memfrs_get_nested_field_offset(&offset_maxlength_to_unicode, "_UNICODE_STRING", 1, "MaximumLength");
+    if( cpu_memory_rw_debug( cpu, ustr_ptr+offset_maxlength_to_unicode, (uint8_t*)&max_length, sizeof(max_length), 0 ) !=0 )
         return NULL;
 
-    f_info = memfrs_q_field(ustr, "Buffer");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&buf_ptr, sizeof(buf_ptr), 0 );
-    memfrs_close_field(f_info); 
+    // Get length
+    memfrs_get_nested_field_offset(&offset_length_to_unicode, "_UNICODE_STRING", 1, "Length");
+    if( cpu_memory_rw_debug( cpu, ustr_ptr+offset_length_to_unicode, (uint8_t*)&length, sizeof(length), 0 ) != 0 )
+        return NULL;
+
+    if(length == 0 || max_length ==0)
+        return NULL;
+
+
+    // Get buffer
+    memfrs_get_nested_field_offset(&offset_buffer_to_unicode, "_UNICODE_STRING", 1, "Buffer");
+    if( cpu_memory_rw_debug( cpu, ustr_ptr+offset_buffer_to_unicode, (uint8_t*)&buf_ptr, sizeof(buf_ptr), 0 ) != 0 )
+        return NULL;
+
 
     buf = (uint8_t*)malloc(max_length+2);
     str = (char*)malloc(max_length+1);
     memset(str, 0, max_length+1);
-    cpu_memory_rw_debug( cpu, buf_ptr, buf, max_length, 0 );
-    //Hardcode Unicode Parse
-    //wcstombs(str, (const wchar_t *)buf, max_length);
+    if( cpu_memory_rw_debug( cpu, buf_ptr, buf, max_length, 0 ) !=0 )
+        return NULL;
+    // Hardcode Unicode Parse
     for(i=0; i<max_length;i+=2)
-        str[i/2] = buf[i];   
+        str[i/2] = buf[i];
     str[i] = 0x00;
 
     free(buf);

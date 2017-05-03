@@ -34,6 +34,7 @@
 #include "ext/memfrs/handles.h"
 #include "ext/memfrs/netscan.h"
 #include "ext/memfrs/ssdt.h"
+#include "ext/memfrs/registry.h"
 
 #include "qmp-commands.h"
 
@@ -608,6 +609,66 @@ void do_ssdt_list(Monitor *mon, const QDict *qdict)
                     print_ssdt_list->system_call_name);
         }
         free(ssdt_list);
+    }
+    else
+        monitor_printf(mon, "Something is wrong, please check error number\n");
+}
+
+
+
+/******************************************************************
+* PURPOSE : List the hive structure address and hive full path
+******************************************************************/
+void do_hive_list(Monitor *mon, const QDict *qdict)
+{
+    CPUState *cpu, *thiscpu=NULL;
+    UT_array *hive_list;
+    hive_list_st *print_hive_list;
+
+    int first_print;
+
+    // Find the first CPU
+    CPU_FOREACH(cpu)
+    {
+        monitor_printf(mon, "%p\n", cpu);
+        thiscpu = cpu;
+        break;
+    }
+
+    hive_list = memfrs_enum_hive_list(g_kpcr_ptr, thiscpu);
+
+    if( hive_list != NULL ){
+        print_hive_list = NULL;
+        monitor_printf(mon, "      Offset              Hive root path\n");
+        monitor_printf(mon, "------------------  --------------------------------------------------\n");
+        while( (print_hive_list=(hive_list_st*)utarray_next(hive_list,print_hive_list)) ){
+            monitor_printf(mon, "0x%"PRIx64"  ", print_hive_list->CMHIVE_address);
+
+            first_print = 1;
+            if( print_hive_list->file_full_path == NULL && print_hive_list->file_user_name == NULL && print_hive_list->hive_root_path == NULL ){
+                monitor_printf(mon, "Unnamed\n");
+            }
+            else{
+                if( print_hive_list->hive_root_path != NULL ){
+                    monitor_printf(mon, "%s\n", print_hive_list->hive_root_path);
+                    first_print = 0;
+                }
+                if( print_hive_list->file_user_name != NULL ){
+                    if( first_print==0 )
+                        monitor_printf(mon, "                    %s\n", print_hive_list->file_user_name);
+                    else
+                        monitor_printf(mon, "%s\n", print_hive_list->file_user_name);
+                    first_print = 0;
+                }
+                if( print_hive_list->file_full_path != NULL ){
+                    if( first_print==0 )
+                        monitor_printf(mon, "                    %s\n", print_hive_list->file_full_path);
+                    else
+                        monitor_printf(mon, "%s\n", print_hive_list->file_full_path);
+                }
+            }
+        }
+        free(hive_list);
     }
     else
         monitor_printf(mon, "Something is wrong, please check error number\n");

@@ -81,59 +81,6 @@ static void add_handle_field_to_struct(UT_array *handle_node, int entry_index, u
 
 
 /*******************************************************************
-static char* parse_unicode_str_ptr(uint64_t ustr_ptr, CPUState *cpu)
-
-parse unicode string from address "ustr_ptr", this is at begining of structure _UNICODE_STRING
-
-INPUT:     uint64_t ustr_ptr,        the begining address of structure _UNICODE_STRING
-           CPUState *cpu,            the pointer to current cpu
-OUTPUT:    char*                     return the ascii string
-*******************************************************************/
-static char* parse_unicode_str_ptr(uint64_t ustr_ptr, CPUState *cpu)
-{
-    int i;
-    uint64_t buf_ptr;
-    uint16_t length, max_length;
-    uint8_t *buf;
-    char* str;
-
-    int offset_maxlength_to_unicode,
-        offset_length_to_unicode,
-        offset_buffer_to_unicode;
-
-
-    // Get maximum length
-    memfrs_get_nested_field_offset(&offset_maxlength_to_unicode, "_UNICODE_STRING", 1, "MaximumLength");
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset_maxlength_to_unicode, (uint8_t*)&max_length, sizeof(max_length), 0 );
-
-    // Get length
-    memfrs_get_nested_field_offset(&offset_length_to_unicode, "_UNICODE_STRING", 1, "Length");
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset_length_to_unicode, (uint8_t*)&length, sizeof(length), 0 );
-
-    if(length == 0 || length > 256 || max_length ==0 || max_length > 256)
-        return NULL;
-
-    // Get buffer
-    memfrs_get_nested_field_offset(&offset_buffer_to_unicode, "_UNICODE_STRING", 1, "Buffer");
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset_buffer_to_unicode, (uint8_t*)&buf_ptr, sizeof(buf_ptr), 0 );
-
-
-    buf = (uint8_t*)malloc(max_length+2);
-    str = (char*)malloc(max_length+1);
-    memset(str, 0, max_length+1);
-    cpu_memory_rw_debug( cpu, buf_ptr, buf, max_length, 0 );
-    // Hardcode Unicode Parse
-    for(i=0; i<max_length;i+=2)
-        str[i/2] = buf[i];   
-    str[i] = 0x00;
-
-    free(buf);
-    return str;
-}
-
-
-
-/*******************************************************************
 static void extract_file_detail( uint64_t handle_table_entry_ptr, CPUState *cpu )
 
 extract handle table name info detail from handle_table_entry_name_info of handle table entry
@@ -161,7 +108,7 @@ static char* extract_entry_name_info_detail( uint64_t handle_table_entry_ptr, ui
         else
             object_header_name_info_ptr = handle_table_entry_ptr-_OBJECT_HEADER_NAME_INFO;
 
-        name_info_detail = parse_unicode_str_ptr(object_header_name_info_ptr+offset_name_to_object_header_name_info, cpu);
+        name_info_detail = parse_unicode_strptr(object_header_name_info_ptr+offset_name_to_object_header_name_info, cpu);
     }
 
     return name_info_detail;
@@ -328,7 +275,7 @@ static char* extract_file_detail( uint64_t handle_table_entry_ptr, uint64_t cr3,
     if( memfrs_get_mem_struct_content( cpu, cr3, (uint8_t*)&device_infomask, sizeof(device_infomask), Device_entry_body_ptr-g_body_to_object_header, false, "_OBJECT_HEADER", 1, "#InfoMask") !=-1 )
         device_detail = extract_entry_name_info_detail( Device_entry_body_ptr-g_body_to_object_header, cr3, cpu );
 
-    file_detail = parse_unicode_str_ptr(handle_table_entry_body_ptr+offset_filename_to_file_object, cpu);
+    file_detail = parse_unicode_strptr(handle_table_entry_body_ptr+offset_filename_to_file_object, cpu);
 
     if(device_detail!=NULL){
 
@@ -423,7 +370,7 @@ static void do_table_entry( int entry_index, uint64_t handle_table_entry_ptr, ui
         true_type_index =  (uint8_t)((type_index ^ cookie ^ ((handle_table_entry_ptr & 0x0000ffffffffffff)>>8))& 0xff );
 
         cpu_memory_rw_debug( cpu, g_ObTypeIndexTable_ptr + 0x8*true_type_index , (uint8_t*)&object_type_ptr, sizeof(object_type_ptr), 0 );
-        true_type_name = parse_unicode_str_ptr(object_type_ptr+offset_name_to_object_type, cpu);
+        true_type_name = parse_unicode_strptr(object_type_ptr+offset_name_to_object_type, cpu);
 
         if( strcmp(true_type_name, "File")==0 )
             detail = extract_file_detail(handle_table_entry_ptr, cr3, cpu);

@@ -162,3 +162,10 @@
         .help       = "listing all system call name and address.",
         .mhandler.cmd = do_ssdt_list,
 },
+{
+        .name = "mba_list_hives",
+        .args_type  = "",
+        .params     = "",
+        .help       = "listing all hive structure address and hive full path.",
+        .mhandler.cmd = do_hive_list,
+},

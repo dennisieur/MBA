@@ -46,5 +46,6 @@ void do_process_handles_list(Monitor *mon, const QDict *qdict);
 void do_handles_types_list(Monitor *mon, const QDict *qdict);
 void do_network_list(Monitor *mon, const QDict *qdict);
 void do_ssdt_list(Monitor *mon, const QDict *qdict);
+void do_hive_list(Monitor *mon, const QDict *qdict);
 #endif
 
