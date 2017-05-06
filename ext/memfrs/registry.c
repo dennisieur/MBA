@@ -105,19 +105,19 @@ UT_array* memfrs_enum_hive_list( uint64_t kpcr_ptr, CPUState *cpu )
     }
 
 
-    // Get Name offset from _OBJECT_TYPE
+    // Get Next address offset from _LIST_ENTRY
     if( memfrs_get_nested_field_offset(&offset_next_to_list_entry, "_LIST_ENTRY", 1, "Flink") ==-1 )
         return NULL;
-    // Get Name offset from _OBJECT_TYPE
+    // Get HiveList offset from _CMHIVE
     if( memfrs_get_nested_field_offset(&offset_HiveList_to_CMHIVE, "_CMHIVE", 1, "HiveList") ==-1 )
         return NULL;
-    // Get Name offset from _OBJECT_TYPE
+    // Get FileFullPath offset from _CMHIVE
     if( memfrs_get_nested_field_offset(&offset_FileFullPath_to_CMHIVE, "_CMHIVE", 1, "FileFullPath") ==-1 )
         return NULL;
-    // Get Name offset from _OBJECT_TYPE
+    // Get FileUserName offset from _CMHIVE
     if( memfrs_get_nested_field_offset(&offset_FileUserName_to_CMHIVE, "_CMHIVE", 1, "FileUserName") ==-1 )
         return NULL;
-    // Get Name offset from _OBJECT_TYPE
+    // Get HiveRootPath offset from _CMHIVE
     if( memfrs_get_nested_field_offset(&offset_HiveRootPath_to_CMHIVE, "_CMHIVE", 1, "HiveRootPath") ==-1 )
         return NULL;
 
@@ -169,4 +169,170 @@ UT_array* memfrs_enum_hive_list( uint64_t kpcr_ptr, CPUState *cpu )
 
 
     return list;
+}
+
+
+
+
+/*****************************************************************n
+int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE*fd, uint64_t CMHIVE_address )
+
+Dump target hive file to a file.
+
+INPUT:      uint64_t kpcr_ptr,       the address of _KPCR struct
+            CPUState *cpu,           the pointer to current cpu
+            FILE *fd                 the file discriptor
+            uint64_t CMHIVE_address  the target hive file head address
+OUTPUT:     return total size for success (the size is greater than zero)
+            return -1 for error
+*******************************************************************/
+int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t CMHIVE_address )
+{
+    uint64_t total_size;
+    int print_loop;
+    int index_storage,
+        index_directory,
+        index_table,
+        index_hbin_block;
+    char block_buffer[4096];
+
+    int flat;
+    uint64_t addr_hhive;
+    uint64_t addr_base_block;
+    uint64_t addr_hhive_storage,
+             addr_storage_map,
+             addr_map_directory,
+             addr_hbin;
+    uint32_t total_length,
+             length;
+    uint32_t size_hbin;
+    int block_number;
+
+    int offset_HHIVE_to_CMHIVE,
+        offset_flat_to_HHIVE,
+        offset_baseblock_to_HHIVE,
+        offset_storage_to_HHIVE,
+        offset_length_to_storage,
+        offset_map_to_storage,
+        offset_hbina_ddr_to_table;
+
+    // Check if the data structure information is loaded
+    if(g_struct_info ==NULL)
+    {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_GLOBAL_STRUCTURE;
+        return -1;
+    }
+    // Check if kpcr is already found
+    if(kpcr_ptr == 0)
+    {
+        memfrs_errno = MEMFRS_ERR_NOT_FOUND_KPCR;
+        return -1;
+    }
+    // Check the cpu pointer valid
+    if(cpu == NULL)
+    {
+        memfrs_errno = MEMFRS_ERR_INVALID_CPU;
+        return -1;
+    }
+
+
+    // Get BaseBlock offset from _HHIVE
+    if( memfrs_get_nested_field_offset(&offset_HHIVE_to_CMHIVE, "_CMHIVE", 1, "Hive") ==-1 )
+        return -1;
+    // Get BaseBlock offset from _HHIVE
+    if( memfrs_get_nested_field_offset(&offset_flat_to_HHIVE, "_HHIVE", 1, "Flat") ==-1 )
+        return -1;
+    // Get BaseBlock offset from _HHIVE
+    if( memfrs_get_nested_field_offset(&offset_baseblock_to_HHIVE, "_HHIVE", 1, "BaseBlock") ==-1 )
+        return -1;
+    // Get BaseBlock offset from _HHIVE
+    if( memfrs_get_nested_field_offset(&offset_storage_to_HHIVE, "_HHIVE", 1, "Storage") ==-1 )
+        return -1;
+    // Get Length offset from storage
+    if( memfrs_get_nested_field_offset(&offset_length_to_storage, "_DUAL", 1, "Length") ==-1 )
+        return -1;
+    // Get Map offset from storage
+    if( memfrs_get_nested_field_offset(&offset_map_to_storage, "_DUAL", 1, "Map") ==-1 )
+        return -1;
+    // Get Map hbin address from _HMAP_ENTRY
+    if( memfrs_get_nested_field_offset(&offset_hbina_ddr_to_table, "_HMAP_ENTRY", 1, "PermanentBinAddress") ==-1 )
+        return -1;
+
+
+    addr_hhive = CMHIVE_address + offset_HHIVE_to_CMHIVE;
+
+
+    // [TODO] What means 'flat'?
+    cpu_memory_rw_debug(cpu, addr_hhive + offset_flat_to_HHIVE, (uint8_t*)&flat, 0x1, 0);
+    flat = flat &0x1;
+    if(flat==1)
+        printf("Flat = 1\n");
+
+
+    // baseblock
+    // [XXX] Still need to check why memory cannot accessed?
+    cpu_memory_rw_debug(cpu, addr_hhive+offset_baseblock_to_HHIVE, (uint8_t*)&addr_base_block, sizeof(addr_base_block), 0);
+    if( cpu_memory_rw_debug(cpu, addr_base_block , (uint8_t*)&block_buffer, BLOCK_SIZE, 0) !=0 ){
+        printf("Physical layer returned None for basicblock\n");
+        for(print_loop=0; print_loop<BLOCK_SIZE; print_loop=print_loop+1)
+            fprintf(fd, "%c", '\0');
+    }
+    else{
+        for(print_loop=0; print_loop<BLOCK_SIZE; print_loop=print_loop+1)
+            fprintf(fd, "%c", block_buffer[print_loop]);
+    }
+
+    total_size = BLOCK_SIZE;
+
+    // hbin
+    // [XXX] Still need to check why memory cannot accessed?
+    for(index_storage=0; index_storage<2; index_storage = index_storage+1){
+        addr_hhive_storage = CMHIVE_address + offset_storage_to_HHIVE + SIZE_Storage*index_storage;
+        cpu_memory_rw_debug(cpu, addr_hhive_storage + offset_length_to_storage, (uint8_t*)&total_length, sizeof(total_length), 0);
+        cpu_memory_rw_debug(cpu, addr_hhive_storage + offset_map_to_storage, (uint8_t*)&addr_storage_map, sizeof(addr_storage_map), 0);
+
+        total_size = total_size + total_length;
+
+        length = 0;
+        index_directory=0;
+        index_table=0;
+        while( length < total_length ){
+            if( cpu_memory_rw_debug(cpu, addr_storage_map + 0x8*index_directory, (uint8_t*)&addr_map_directory, sizeof(addr_map_directory), 0) !=0){
+                printf("Physical layer returned None for MAP(%"PRIx64") : storage[%d] directory[%d]\n", addr_storage_map, index_storage, index_directory);
+                total_size = total_size - total_length;
+                break;
+            }
+            if( cpu_memory_rw_debug(cpu, addr_map_directory + SIZE_HMAP_TABLE*index_table + offset_hbina_ddr_to_table, (uint8_t*)&addr_hbin, sizeof(addr_hbin), 0) !=0){
+                printf("Physical layer returned None for DIRECTORY(%"PRIx64") : directory[%d] table[%d]\n", addr_map_directory, index_directory, index_table);
+                addr_hbin = 0x0000000000000000;
+            }
+
+            // sometimes hbin address has unknown data in last byte
+            addr_hbin = addr_hbin & 0xfffffffffffffff0;
+
+            if( cpu_memory_rw_debug(cpu, addr_hbin+0x8, (uint8_t*)&size_hbin, sizeof(size_hbin), 0) != 0){
+                if(addr_hbin != 0x0000000000000000)
+                    printf("Physical layer returned None for HBIN(%"PRIx64") : directory[%d] table[%d]\n", addr_hbin, index_directory, index_table);
+                size_hbin = BLOCK_SIZE;
+                block_number = 1;
+                for(print_loop=0; print_loop<BLOCK_SIZE; print_loop=print_loop+1)
+                    fprintf(fd, "%c", '\0');
+            }
+            else{
+                block_number = size_hbin/BLOCK_SIZE;
+                for(index_hbin_block=0; index_hbin_block<block_number; index_hbin_block = index_hbin_block+1){
+                    cpu_memory_rw_debug(cpu, addr_hbin + BLOCK_SIZE*index_hbin_block, (uint8_t*)&block_buffer, BLOCK_SIZE, 0);
+                    for(print_loop=0; print_loop<BLOCK_SIZE; print_loop=print_loop+1)
+                        fprintf(fd, "%c", block_buffer[print_loop]);
+                }
+            }
+
+            // Add index
+            index_directory = index_directory + (index_table + block_number)/MAX_TABLE_SIZE;
+            index_table = (index_table + block_number)%MAX_TABLE_SIZE;
+            // Add printed length
+            length = length + size_hbin;
+        }
+    }
+    return total_size;
 }
