@@ -25,6 +25,10 @@
 #include "monitor/monitor.h"
 #endif
 
+#ifdef CONFIG_MEMFRS
+extern int registry_dumping;
+#endif
+
 static void cpu_x86_version(CPUX86State *env, int *family, int *model)
 {
     int cpuver = env->cpuid_version;
@@ -871,6 +875,9 @@ hwaddr x86_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
             pte = ldq_phys(cs->as, pte_addr);
         }
         if (!(pte & PG_PRESENT_MASK)) {
+#ifdef CONFIG_MEMFRS
+if(registry_dumping!=1)
+#endif
             return -1;
         }
     } else {

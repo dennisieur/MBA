@@ -24,6 +24,7 @@
 #include "memfrs-priv.h"
 #include "registry.h"
 
+int registry_dumping =0;
 
 #define copy_str_to_utarray(x)                              \
             if(x!=NULL){                                    \
@@ -194,7 +195,7 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
         index_directory,
         index_table,
         index_hbin_block;
-    char block_buffer[4096];
+    char block_buffer[BLOCK_SIZE];
 
     int flat;
     uint64_t addr_hhive;
@@ -214,7 +215,8 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
         offset_storage_to_HHIVE,
         offset_length_to_storage,
         offset_map_to_storage,
-        offset_hbina_ddr_to_table;
+        offset_hbin_addr_to_table,
+        offset_size_to_HBIN;
 
     // Check if the data structure information is loaded
     if(g_struct_info ==NULL)
@@ -255,14 +257,19 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
     if( memfrs_get_nested_field_offset(&offset_map_to_storage, "_DUAL", 1, "Map") ==-1 )
         return -1;
     // Get Map hbin address from _HMAP_ENTRY
-    if( memfrs_get_nested_field_offset(&offset_hbina_ddr_to_table, "_HMAP_ENTRY", 1, "PermanentBinAddress") ==-1 )
+    if( memfrs_get_nested_field_offset(&offset_hbin_addr_to_table, "_HMAP_ENTRY", 1, "PermanentBinAddress") ==-1 )
+        return -1;
+    // Get Map hbin size from _HBIN
+    if( memfrs_get_nested_field_offset(&offset_size_to_HBIN, "_HBIN", 1, "Size") ==-1 )
         return -1;
 
 
     addr_hhive = CMHIVE_address + offset_HHIVE_to_CMHIVE;
 
+    registry_dumping = 1;
 
-    // [TODO] What means 'flat'?
+
+    // [TODO] Still need to know what means 'flat'?
     cpu_memory_rw_debug(cpu, addr_hhive + offset_flat_to_HHIVE, (uint8_t*)&flat, 0x1, 0);
     flat = flat &0x1;
     if(flat==1)
@@ -270,7 +277,6 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
 
 
     // baseblock
-    // [XXX] Still need to check why memory cannot accessed?
     cpu_memory_rw_debug(cpu, addr_hhive+offset_baseblock_to_HHIVE, (uint8_t*)&addr_base_block, sizeof(addr_base_block), 0);
     if( cpu_memory_rw_debug(cpu, addr_base_block , (uint8_t*)&block_buffer, BLOCK_SIZE, 0) !=0 ){
         printf("Physical layer returned None for basicblock\n");
@@ -285,7 +291,7 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
     total_size = BLOCK_SIZE;
 
     // hbin
-    // [XXX] Still need to check why memory cannot accessed?
+    // [XXX] Still need to check why hbin is empty?
     for(index_storage=0; index_storage<2; index_storage = index_storage+1){
         addr_hhive_storage = CMHIVE_address + offset_storage_to_HHIVE + SIZE_Storage*index_storage;
         cpu_memory_rw_debug(cpu, addr_hhive_storage + offset_length_to_storage, (uint8_t*)&total_length, sizeof(total_length), 0);
@@ -298,21 +304,25 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
         index_table=0;
         while( length < total_length ){
             if( cpu_memory_rw_debug(cpu, addr_storage_map + 0x8*index_directory, (uint8_t*)&addr_map_directory, sizeof(addr_map_directory), 0) !=0){
-                printf("Physical layer returned None for MAP(%"PRIx64") : storage[%d] directory[%d]\n", addr_storage_map, index_storage, index_directory);
+                printf("Physical layer returned None for MAP(%"PRIx64") : storage[%d] directory[%d]\n",
+                                                        addr_storage_map, index_storage, index_directory);
                 total_size = total_size - total_length;
                 break;
             }
-            if( cpu_memory_rw_debug(cpu, addr_map_directory + SIZE_HMAP_TABLE*index_table + offset_hbina_ddr_to_table, (uint8_t*)&addr_hbin, sizeof(addr_hbin), 0) !=0){
-                printf("Physical layer returned None for DIRECTORY(%"PRIx64") : directory[%d] table[%d]\n", addr_map_directory, index_directory, index_table);
+            if( cpu_memory_rw_debug(cpu, addr_map_directory + SIZE_HMAP_TABLE*index_table + offset_hbin_addr_to_table, (uint8_t*)&addr_hbin, sizeof(addr_hbin), 0) !=0){
+                printf("Physical layer returned None for DIRECTORY(%"PRIx64") : storage[%d] directory[%d] table[%d]\n",
+                                                            addr_map_directory, index_storage, index_directory, index_table);
                 addr_hbin = 0x0000000000000000;
             }
 
-            // sometimes hbin address has unknown data in last byte
+            // [TODO] hbin address has unknown data in last byte
             addr_hbin = addr_hbin & 0xfffffffffffffff0;
 
-            if( cpu_memory_rw_debug(cpu, addr_hbin+0x8, (uint8_t*)&size_hbin, sizeof(size_hbin), 0) != 0){
+            size_hbin = 0x0;
+            if( cpu_memory_rw_debug(cpu, addr_hbin+offset_size_to_HBIN, (uint8_t*)&size_hbin, sizeof(size_hbin), 0)!=0 || size_hbin==0x0 ){
                 if(addr_hbin != 0x0000000000000000)
-                    printf("Physical layer returned None for HBIN(%"PRIx64") : directory[%d] table[%d]\n", addr_hbin, index_directory, index_table);
+                    printf("Physical layer returned None for HBIN(%"PRIx64") : storage[%d] directory[%d] table[%d]\n",
+                                                                    addr_hbin, index_storage, index_directory, index_table);
                 size_hbin = BLOCK_SIZE;
                 block_number = 1;
                 for(print_loop=0; print_loop<BLOCK_SIZE; print_loop=print_loop+1)
@@ -334,5 +344,7 @@ int memfrs_registry_dump( uint64_t kpcr_ptr, CPUState *cpu, FILE *fd, uint64_t C
             length = length + size_hbin;
         }
     }
+
+    registry_dumping = 0;
     return total_size;
 }
