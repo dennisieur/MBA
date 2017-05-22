@@ -20,14 +20,14 @@
         .name = "mba_load_structures",
         .args_type  = "sdb:F",
         .params     = "sdb",
-        .help       = "loading structures information",
+        .help       = "load structures information",
         .mhandler.cmd = do_load_structures,
 },
 {
         .name = "mba_list_processes",
         .args_type  = "",
         .params     = "",
-        .help       = "listing running processes",
+        .help       = "list running processes",
         .mhandler.cmd = do_process_list,
 },
 {
@@ -104,7 +104,7 @@
         .name = "mba_load_global_variable",
         .args_type  = "gvar_db:F",
         .params     = "gvar_db",
-        .help       = "loading global variable information",
+        .help       = "load global variable information",
         .mhandler.cmd = do_load_global_variable,
 },
 {
@@ -139,7 +139,7 @@
         .name = "mba_list_handles",
         .args_type  = "target_type:s?,target:s?",
         .params     = "[-c cr3 | -e eprocess | -t handles_type]",
-        .help       = "listing process running handles.\n"
+        .help       = "list process running handles.\n"
                        "-c cr3 : parse handles of process by process' cr3\n"
                        "-e eprocess : parse handles of process by process' eprocess\n"
                        "-p pid : parse handles of process by process' pid\n"
@@ -152,13 +152,27 @@
         .name = "mba_list_handles_types",
         .args_type  = "",
         .params     = "",
-        .help       = "listing all types of handles",
+        .help       = "list all types of handles",
         .mhandler.cmd = do_handles_types_list,
 },
 {
         .name = "mba_list_ssdt",
         .args_type  = "",
         .params     = "",
-        .help       = "listing all system call name and address.",
+        .help       = "list all system call name and address.",
         .mhandler.cmd = do_ssdt_list,
+},
+{
+        .name = "mba_list_hives",
+        .args_type  = "",
+        .params     = "",
+        .help       = "list all hive structure address and hive full path.",
+        .mhandler.cmd = do_hive_list,
+},
+{
+        .name = "mba_regdump",
+        .args_type  = "",
+        .params     = "",
+        .help       = "dump all hive files.",
+        .mhandler.cmd = do_regdump,
 },

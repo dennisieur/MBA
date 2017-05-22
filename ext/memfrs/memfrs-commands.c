@@ -19,6 +19,8 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+#include <string.h>
+
 #include "qemu-common.h"
 #include "monitor/monitor.h"
 
@@ -34,6 +36,7 @@
 #include "ext/memfrs/handles.h"
 #include "ext/memfrs/netscan.h"
 #include "ext/memfrs/ssdt.h"
+#include "ext/memfrs/registry.h"
 
 #include "qmp-commands.h"
 
@@ -611,4 +614,144 @@ void do_ssdt_list(Monitor *mon, const QDict *qdict)
     }
     else
         monitor_printf(mon, "Something is wrong, please check error number\n");
+}
+
+
+
+/******************************************************************
+* PURPOSE : List the hive structure address and hive full path
+******************************************************************/
+void do_hive_list(Monitor *mon, const QDict *qdict)
+{
+    CPUState *cpu, *thiscpu=NULL;
+    UT_array *hive_list;
+    hive_list_st *print_hive_list;
+
+    int first_print;
+
+    // Find the first CPU
+    CPU_FOREACH(cpu)
+    {
+        monitor_printf(mon, "%p\n", cpu);
+        thiscpu = cpu;
+        break;
+    }
+
+    hive_list = memfrs_enum_hive_list(g_kpcr_ptr, thiscpu);
+
+    if( hive_list != NULL ){
+        print_hive_list = NULL;
+        monitor_printf(mon, "      Offset              Hive root path\n");
+        monitor_printf(mon, "------------------  --------------------------------------------------\n");
+        while( (print_hive_list=(hive_list_st*)utarray_next(hive_list,print_hive_list)) ){
+            monitor_printf(mon, "0x%"PRIx64"  ", print_hive_list->CMHIVE_address);
+
+            first_print = 1;
+            if( print_hive_list->file_full_path == NULL && print_hive_list->file_user_name == NULL && print_hive_list->hive_root_path == NULL ){
+                monitor_printf(mon, "Unnamed\n");
+            }
+            else{
+                if( print_hive_list->hive_root_path != NULL ){
+                    monitor_printf(mon, "%s\n", print_hive_list->hive_root_path);
+                    first_print = 0;
+                }
+                if( print_hive_list->file_user_name != NULL ){
+                    if( first_print==0 )
+                        monitor_printf(mon, "                    %s\n", print_hive_list->file_user_name);
+                    else
+                        monitor_printf(mon, "%s\n", print_hive_list->file_user_name);
+                    first_print = 0;
+                }
+                if( print_hive_list->file_full_path != NULL ){
+                    if( first_print==0 )
+                        monitor_printf(mon, "                    %s\n", print_hive_list->file_full_path);
+                    else
+                        monitor_printf(mon, "%s\n", print_hive_list->file_full_path);
+                }
+            }
+        }
+        free(hive_list);
+    }
+    else
+        monitor_printf(mon, "Something is wrong, please check error number\n");
+}
+
+
+
+/******************************************************************
+* PURPOSE : List the hive structure address and hive full path
+******************************************************************/
+void do_regdump(Monitor *mon, const QDict *qdict)
+{
+    CPUState *cpu, *thiscpu=NULL;
+    UT_array *hive_list;
+    hive_list_st *print_hive_list;
+    uint64_t total_file_size;
+
+    FILE *fd;
+    const char *delim = "\\";
+    char *target, *pch, *tmp_pch, *savestr;
+
+    // Find the first CPU
+    CPU_FOREACH(cpu)
+    {
+        monitor_printf(mon, "%p\n", cpu);
+        thiscpu = cpu;
+        break;
+    }
+
+    hive_list = memfrs_enum_hive_list(g_kpcr_ptr, thiscpu);
+
+    if( hive_list != NULL ){
+        print_hive_list = NULL;
+        while( (print_hive_list=(hive_list_st*)utarray_next(hive_list,print_hive_list)) ){
+
+            if( print_hive_list->file_full_path == NULL && print_hive_list->file_user_name == NULL && print_hive_list->hive_root_path == NULL ){
+                target = (char*)malloc(29);
+                sprintf(target, "Unnamed @ 0x%"PRIx64, print_hive_list->CMHIVE_address);
+                savestr = strdup(target);
+            }
+            else{
+                if( print_hive_list->file_full_path != NULL )
+                    savestr = strdup(print_hive_list->file_full_path);
+                else if( print_hive_list->file_user_name != NULL )
+                    savestr = strdup(print_hive_list->file_user_name);
+                else if( print_hive_list->hive_root_path != NULL )
+                    savestr = strdup(print_hive_list->hive_root_path);
+                else{
+                    savestr = (char*)malloc(8);
+                    sprintf(savestr, "Unnamed");
+                }
+
+                tmp_pch = NULL;
+                pch = strdup(savestr);
+                pch = strtok(pch, delim);
+                while(pch!=NULL){
+                    tmp_pch = pch;
+                    pch = strtok(NULL, delim);
+                }
+                target = (char*)malloc(strlen(tmp_pch)+22);
+                sprintf(target, "%s @ 0x%"PRIx64, tmp_pch, print_hive_list->CMHIVE_address);
+            }
+
+            fd = fopen( target, "w");
+            if(fd == NULL)
+                monitor_printf(mon, "Error opening file!\n");
+            else{
+                monitor_printf(mon, "*************************************************************************\n");
+                total_file_size = memfrs_registry_dump(g_kpcr_ptr, thiscpu, fd, print_hive_list->CMHIVE_address);
+                monitor_printf(mon, "Dumping %s into \"%s\"\n", savestr, target);
+                if(total_file_size <= BLOCK_SIZE)
+                    monitor_printf(mon, "Something is wrong!!\n");
+                monitor_printf(mon, "Dump %"PRIu64" bytes\n", total_file_size);
+                fclose(fd);
+            }
+
+            free(target);
+            free(savestr);
+        }
+        free(hive_list);
+    }
+    else
+        monitor_printf(mon, "Something is wrong in `memfrs_enum_hive_list`, please check error number\n");
 }

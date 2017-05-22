@@ -120,7 +120,6 @@ UT_array* memfrs_enum_ssdt_list( uint64_t kpcr_ptr, CPUState *cpu )
     utarray_new( list, &ssdt_list_icd);
 
     for( i=0 ; i<syscall_count ; i=i+1 ){
-        //if( cpu_memory_rw_debug((CPUState *)&copied_cpu, addr_KiServiceTable + i*0x4 , (uint8_t*)&syscall_tmp_addr, sizeof(syscall_tmp_addr), 0) == 0 ){
         if( cpu_memory_rw_debug(cpu, addr_KiServiceTable + i*0x4 , (uint8_t*)&syscall_tmp_addr, sizeof(syscall_tmp_addr), 0) == 0 ){
             syscall_addr = (syscall_tmp_addr>>4) + addr_KiServiceTable;
 
