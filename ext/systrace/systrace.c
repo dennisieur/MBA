@@ -25,7 +25,6 @@
 #include "utlist.h"
 #include "utarray.h"
 #include "ext/obhook/obhook.h"
-#include "ext/memfrs/ssdt.h"
 
 #define MAX_NM_SYSTRACE 65536
 #define MAX_SZ_SYSTRACE_LABEL 16
@@ -36,33 +35,6 @@
 
 
 SYSTRACE_ERRNO systrace_errno;
-
-typedef struct systrace_record{
-    // The id for the tracer
-    int id;
-
-    // Label for user to reconize the systrace
-    char label[MAX_SZ_SYSTRACE_LABEL];
-
-    // the number of the system call to trace
-    int           syscall_number;
-
-    // the callback, invoked with X86CPU, is_invoked, user_argument
-    systrace_cb   callback;
-
-    // target cr3, trace all process if CR3_ALL
-    target_ulong  cr3;
-
-    // Specific if the tracer monitor on system call entry
-    bool is_entry;
-
-    // user argument for callback
-    void         *cb_args;
-
-    // linked list token
-    struct systrace_record *next;
-
-} systrace_record;
 
 struct {
     // table of records, NULL if not occupied
@@ -123,7 +95,7 @@ static syscall_context* gen_syscall_context(int syscall_number, CPUX86State *env
     
     // Calculate context code
     thread = memfrs_get_current_thread(CPU(x86cpu));
-    context_idx = (env->cr[3] << (32-12)) | thread->unique_thread ;
+    context_idx = (env->cr[3] << (32-12)) | thread->tid;
     free(thread);
 
     // Filling context info
@@ -184,7 +156,7 @@ static void event_callret( CPUX86State *env, bool is_enter ) {
 
     // Get the SSDT information if it's not existed
     if(sys_ctx->g_ssdt_info == NULL){
-        sys_ctx->g_ssdt_info = memfrs_enum_ssdt_list( g_kpcr_ptr , CPU(x86cpu));
+        sys_ctx->g_ssdt_info = memfrs_enum_ssdt_list(CPU(x86cpu));
     }
 
     if(is_enter){
@@ -196,7 +168,7 @@ static void event_callret( CPUX86State *env, bool is_enter ) {
     }else{
         // Calculatet context code as index
         thread = memfrs_get_current_thread(CPU(x86cpu));
-        context_idx = (env->cr[3] << (32-12)) | thread->unique_thread ;
+        context_idx = (env->cr[3] << (32-12)) | thread->tid;
         free(thread);
 
         // Find the responding system call context  
@@ -291,17 +263,9 @@ extern int systrace_delete( int systrace_handle ) {
     FAIL( SYSTRACE_ERR_INTERNAL_BROKEN );
 }
 
-// public API for listing all system call tracer
-extern int systrace_list(void) {
-    systrace_record *rec;
-    systrace_record *tmp;
- 
-    printf("List all systrace\n");
-    LL_FOREACH_SAFE( sys_ctx->ll_records, rec, tmp ) {
-        printf("\tID: %d, LABEL: %s, SYSNUM: %d, CR3: %016lx, CB: %p\n", 
-              rec->id, rec->label, rec->syscall_number, rec->cr3, rec->callback);
-    }
-    SUCCEED();
+// public API for getting all system call tracer
+extern systrace_record* systrace_list(void) {
+    return sys_ctx->ll_records;
 }
 
 

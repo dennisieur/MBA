@@ -24,36 +24,35 @@
 // re-define certain header in order to decouple the QEMU dependency
 #include "../../../include/utlist.h"
 #include "../../../include/uthash.h"
+#include "../../../include/utarray.h"
 
 #include "test.h"
 
 typedef uint64_t target_ulong;
 
 struct hook_func {
-
     virtual ~hook_func() {};
-
     // library API
-    virtual int cpu_memory_rw_debug(void *cpu, target_ulong addr,
-                uint8_t *buf, int len, int is_write) = 0;
-    virtual void cpu_physical_memory_read(hwaddr addr,
-                void *buf, int len) = 0;
-   
-
+    virtual int     cpu_memory_rw_debug(void *cpu, target_ulong addr, uint8_t *buf, int len, int is_write) = 0;
+    virtual void    cpu_physical_memory_read(hwaddr addr, void *buf, int len) = 0;
+    // public API
     // obhook functions/API
 };
 
 struct mock_func : hook_func {
     public:
+        // library API
         MOCK_METHOD3( cpu_physical_memory_read, void(hwaddr, void *, int));
         MOCK_METHOD5( cpu_memory_rw_debug, int(void *, target_ulong, uint8_t *, int, int));
+        // public API
 } *mock_ptr;
 
 #define GEN_MOCK_OBJECT(x)  mock_func x; mock_ptr = &x;
+#define GEN_NICEMOCK_OBJECT(x)  NiceMock<mock_func> x; mock_ptr = &x;
 
 // mock the functions in the original code
-#define cpu_memory_rw_debug(arg1, arg2, arg3, arg4, arg5)      mock_ptr->cpu_memory_rw_debug(arg1, arg2, arg3, arg4, arg5)
-#define cpu_physical_memory_read(arg1, arg2, arg3)     mock_ptr->cpu_physical_memory_read(arg1, arg2, arg3)
+#define cpu_memory_rw_debug(arg1, arg2, arg3, arg4, arg5)       mock_ptr->cpu_memory_rw_debug(arg1, arg2, arg3, arg4, arg5)
+#define cpu_physical_memory_read(arg1, arg2, arg3)              mock_ptr->cpu_physical_memory_read(arg1, arg2, arg3)
 
 #define monitor_printf(mon, fmt, ...)    printf( fmt, ##__VA_ARGS__)
 
@@ -66,6 +65,8 @@ extern "C" {
 
 #undef cpu_memory_rw_debug
 #undef cpu_physical_memory_read
+
+
 
 using namespace ::testing;
 
@@ -466,19 +467,46 @@ ACTION_P( PHYREAD_UnicodeString, Ustring) {
     memcpy(reinterpret_cast<char *>(arg1), Ustring, arg2);
 }
 
+uint64_t fakeuint64_loop = 0xffff000000000000;
+uint64_t fakeuint64_1 = 0xffff000000000001;
+uint64_t fakeuint64_2 = 0xffff000000000002;
+ACTION_P( MEMREAD_FakeUint_8, type) {
+    *((uint8_t *)(arg2)) = type;
+}
+
+ACTION_P( MEMREAD_FakeUint_64, type) {
+    *((uint64_t *)(arg2)) = type;
+}
+
+ACTION_P( PHYREAD_FakeUint_64, content) {
+    *((uint64_t *)(arg1)) = content;
+}
+
+ACTION_P( MEMREAD_UnicodeString, Ustring) {
+    memcpy(reinterpret_cast<char *>(arg2), Ustring, arg3);
+}
+
 TEST_F( MEMFRS_KMOD, Scan_Modules ){
     CPUState cpu;
     GEN_MOCK_OBJECT( mock );
     kernel_module* kmod = NULL;
     
     EXPECT_CALL( mock, cpu_memory_rw_debug(_,_,_,_,_))
-               .WillOnce( DoAll( MEMREAD_FakeUstring("f.i.l.e.n.a.m.e."), Return(0) ) )
-               .WillOnce( DoAll( MEMREAD_FakeUstring("f.i.l.e.n.a.m.e."), Return(0) ) );
+                .WillOnce( DoAll( MEMREAD_FakeUint_64(fakeuint64_loop), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_64(fakeuint64_loop), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_8(32), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_8(16), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_64(fakeuint64_1), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_UnicodeString("f.i.l.e.n.a.m.e."), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_8(32), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_8(16), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_FakeUint_64(fakeuint64_2), Return(0) ) )
+                .WillOnce( DoAll( MEMREAD_UnicodeString("f.i.l.e.n.a.m.e."), Return(0) ) )
+                .WillRepeatedly( DoAll( MEMREAD_FakeUint_64(fakeuint64_loop), Return(0) ) );
  
     EXPECT_CALL( mock, cpu_physical_memory_read(_,_,_))
                .WillOnce( PHYREAD_ModuleTag(fake_phymem_content)) //;//.
-               .WillOnce( PHYREAD_UnicodeString(pattern))
-               .WillOnce( PHYREAD_UnicodeString(pattern))
+               .WillOnce( PHYREAD_FakeUint_64(fakeuint64_loop))
                .WillRepeatedly( PHYREAD_ModuleTag(".......................") );
 
     UT_array *ret = memfrs_scan_module(&cpu);
@@ -489,13 +517,13 @@ TEST_F( MEMFRS_KMOD, Scan_Modules ){
     ASSERT_TRUE(kmod != NULL);
     ASSERT_STREQ( kmod->fullname, "filename" );
     ASSERT_STREQ( kmod->basename, "filename" );
-    ASSERT_EQ( kmod->base, 0 );
+    ASSERT_EQ( kmod->virtual_addr, fakeuint64_loop );
 }
 
 
 TEST_F( MEMFRS_KMOD, Scan_Modules_No_Tag ){
     CPUState cpu;
-    GEN_MOCK_OBJECT( mock );
+    GEN_NICEMOCK_OBJECT( mock );
     //kernel_module* kmod = NULL;
 
     EXPECT_CALL( mock, cpu_physical_memory_read(_,_,_))
@@ -516,6 +544,7 @@ TEST_F( MEMFRS_KMOD, Scan_Modules_No_Struct ){
     ASSERT_TRUE(ret ==  NULL);
 }
 
+//================== Testing for vad.c ===============================//
 
 class MEMFRS_VAD : public MemfrsContextInitialized{};
 
@@ -708,7 +737,7 @@ TEST_F( MEMFRS_VAD, VAD_TRAVERSE ){
     filename = ((vad_node*)utarray_eltptr( vad_list, 2))->filename;
     ASSERT_EQ( 0, strcmp( "filename3", filename) );
 }
-
+/*
 TEST_F( MEMFRS_VAD, VAD_TRAVERSE_NO_Node ){
     CPUState cpu;
     UT_array *vad_list;
@@ -719,7 +748,7 @@ TEST_F( MEMFRS_VAD, VAD_TRAVERSE_NO_Node ){
     vad_list = memfrs_traverse_vad_tree(0x123,  &cpu);
     ASSERT_EQ( 0, utarray_len(vad_list));
 }
-
+*/
 TEST_F( MEMFRS_VAD, VAD_TRAVERSE_NO_Struct_Info ){
     CPUState cpu;
     UT_array *vad_list;
@@ -728,5 +757,3 @@ TEST_F( MEMFRS_VAD, VAD_TRAVERSE_NO_Struct_Info ){
     vad_list = memfrs_traverse_vad_tree(0x123,  &cpu);
     ASSERT_EQ( NULL, vad_list);
 }
-
-

@@ -16,6 +16,9 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
+
+
 #ifndef __MEMFRS_VAD_H__
 #define __MEMFRS_VAD_H__
 
@@ -23,13 +26,16 @@
 #include "qom/cpu.h"
 #endif
 
+
+
 typedef struct vad_node{
     uint64_t start_viraddr;
     uint64_t end_viraddr;
     int vad_type;
     int vad_protection;
     char* filename;
-} vad_node;
+}vad_node;
+
 
 typedef enum{
     VadNone,
@@ -40,7 +46,8 @@ typedef enum{
     VadLargePages,
     VadRotatePhysical,
     VadLargePageSection
-} MI_VAD_TYPE_ENUM;
+}MI_VAD_TYPE_ENUM;
+
 
 typedef enum{
     PAGE_EXECUTE = 0x10,
@@ -54,7 +61,8 @@ typedef enum{
     PAGE_GUARD = 0x100,
     PAGE_NOCACHE = 0x200,
     PAGE_WRITECOMBINE = 0x400,
-} PAGE_PERMISSION;
+}PAGE_PERMISSION;
+
 
 static int const MmProtectToValue[32] = {
         PAGE_NOACCESS,
@@ -91,5 +99,6 @@ static int const MmProtectToValue[32] = {
         PAGE_WRITECOMBINE | PAGE_EXECUTE_WRITECOPY
 };
 
-vad_node* parse_mmvad_node(uint64_t mmvad_ptr, CPUState *cpu);
+
+
 #endif

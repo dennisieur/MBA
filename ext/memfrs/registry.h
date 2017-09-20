@@ -1,5 +1,5 @@
 /*
- *  MBA Network scanning Introspection Header File
+ *  MBA Virtual Machine Memory Introspection implementation
  *
  *  Copyright (c)   2016 ELin Ho
  *
@@ -17,29 +17,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#define MAXMEM 0x80000000
 
-#define POOL_TAG_UDP_ENDPOINT "UdpA"
-#define POOL_TAG_TCP_ENDPOINT "TcpE"
-#define POOL_TAG_TCP_LISTENER "TcpL"
-
-#define AF_INET 2
-#define AF_INET6 23
-
-typedef enum TCP_STATE{
-    TCP_CLOSED,
-    TCP_LISTENING,
-    TCP_SYN_SENT,
-    TCP_SYN_RCVD,
-    TCP_ESTABLISHED,
-    TCP_FIN_WAIT1,
-    TCP_FIN_WAIT2,
-    TCP_CLOSE_WAIT,
-    TCP_CLOSING,
-    TCP_LAST_ACK,
-    TCP_NO_STATE_10,
-    TCP_NO_STATE_11,
-    TCP_TIME_WAIT,
-    TCP_DELETE_TCP
-}TCP_STATE;
-extern TCP_STATE tcp_state;
+#define BLOCK_SIZE      0x1000
+#define MAX_TABLE_SIZE  512
+#define SIZE_Storage    0x278
+#define SIZE_HMAP_TABLE 0x28

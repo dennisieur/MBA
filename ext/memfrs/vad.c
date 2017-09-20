@@ -2,6 +2,7 @@
  *  MBA VAD Introspection Implementation
  *
  *  Copyright (c)   2016 ChongKuan Chen
+ *                  2017 ELin Ho
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -17,6 +18,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+
+
 #if !defined(CONFIG_MEMFRS_TEST)
 #include "qemu-common.h"
 #endif
@@ -24,6 +27,14 @@
 #include "memfrs.h"
 #include "memfrs-priv.h"
 #include "vad.h"
+
+
+
+// UT_array's eelement structure for vad address
+UT_icd vad_adr_icd = {sizeof(uint64_t), NULL, NULL, NULL};
+UT_icd vad_node_icd = {sizeof(vad_node), NULL, NULL, NULL};
+
+
 
 // Mapping between VAD type and it's name
 const char *MI_VAD_TYPE_STR[] = {
@@ -36,6 +47,8 @@ const char *MI_VAD_TYPE_STR[] = {
     "VadRotatePhysical",
     "VadLargePageSection"
 };
+
+
 
 // Mapping between page permission and it's description
 const char *PAGE_PERMISSION_STR[] = {
@@ -73,76 +86,51 @@ const char *PAGE_PERMISSION_STR[] = {
     "PAGE_WRITECOMBINE | PAGE_EXECUTE_WRITECOPY",
 };
 
+
+
 /*********************************************************************************
-int parse_mmvad_node(uint64_t mmvad_ptr, CPUState *cpu)
-
-Parsing the vad node information by the given VAD node(MMVAD) virtual address.
-Output is throw to stdout.
-
-INPUT: uint64_t mmvad_ptr       the virtual address to the VAD node
-       CPUState *cpu            pointer to current cpu
-
-OUTPUT: vad_node                     return vad node pointer, and NULL if error
+/// Parsing the vad node information by the given VAD node(MMVAD) virtual address.
+/// Output is throw to stdout.
+///
+/// \param mmvad_ptr    the virtual address to the VAD node
+/// \param cpu          pointer to current cpu
+///
+/// return vad node pointer, and NULL if error
 **********************************************************************************/
-vad_node* parse_mmvad_node(uint64_t mmvad_ptr, CPUState *cpu)
+static vad_node* parse_mmvad_node(uint64_t mmvad_ptr, CPUState *cpu)
 {
-    json_object* jmmvad = NULL;
-    json_object* jobj = NULL;
-    field_info* f_info = NULL;
-    int offset = 0;
-    int vad_type, vad_protection;
-
-    uint32_t starting_vpn, ending_vpn;
-    uint8_t starting_vpn_high, ending_vpn_high;
-    uint64_t start_viraddr, end_viraddr;
     uint64_t file_pointer_ptr;
-    uint64_t subsection_ptr, control_area_ptr, file_name_unicode_ptr;
-    
-    // Hard code Unicode String Size
-    // TODO: Add length support in ds query system
-    uint32_t u;
-    char* filename;
+    uint64_t start_viraddr,
+             end_viraddr;
+    uint32_t starting_vpn,
+             ending_vpn,
+             u;
+    uint8_t  starting_vpn_high,
+             ending_vpn_high;
+
+    int offset_filename_to_fileobj = 0;
+    int vad_type,
+        vad_protection;
+    char *filename;
 
     vad_node* vad = (vad_node*)malloc(sizeof(vad_node));
 
-    // Qery DS for VAD Virtual Address range
-    jmmvad = memfrs_q_struct("_MMVAD_SHORT");
-
-    f_info = memfrs_q_field(jmmvad, "StartingVpn");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, mmvad_ptr+offset, (uint8_t*)&starting_vpn, sizeof(starting_vpn), 0 );
-    memfrs_close_field(f_info);
-
-    f_info = memfrs_q_field(jmmvad, "EndingVpn");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, mmvad_ptr+offset, (uint8_t*)&ending_vpn, sizeof(ending_vpn), 0 );
-    memfrs_close_field(f_info);
-
-    f_info = memfrs_q_field(jmmvad, "StartingVpnHigh");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, mmvad_ptr+offset, (uint8_t*)&starting_vpn_high, sizeof(starting_vpn_high), 0 );
-    memfrs_close_field(f_info);
-
-    f_info = memfrs_q_field(jmmvad, "EndingVpnHigh");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, mmvad_ptr+offset, (uint8_t*)&ending_vpn_high, sizeof(ending_vpn_high), 0 );
-    memfrs_close_field(f_info);
+    // Qery VAD Virtual Address range
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&starting_vpn, sizeof(starting_vpn), mmvad_ptr, false, "_MMVAD_SHORT", 1, "#StartingVpn");
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&ending_vpn, sizeof(ending_vpn), mmvad_ptr, false, "_MMVAD_SHORT", 1, "#EndingVpn");
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&starting_vpn_high, sizeof(starting_vpn_high), mmvad_ptr, false, "_MMVAD_SHORT", 1, "#StartingVpnHigh");
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&ending_vpn_high, sizeof(ending_vpn_high), mmvad_ptr, false, "_MMVAD_SHORT", 1, "#EndingVpnHigh");
 
     start_viraddr = (( (uint64_t)starting_vpn_high << 32 ) + starting_vpn ) << 12;
     end_viraddr = ((( (uint64_t)ending_vpn_high << 32 ) + ending_vpn ) << 12 ) + 0xfff;
-    //printf("VAD vir range %" PRIx64 " <---------> %" PRIx64 "\n", start_viraddr, end_viraddr);
+    //printf("VAD vir range %" PRIx64 " <---------> %" PRIx64 "\n", start_viraddr, end_viraddr); // only for checking
 
     // Query for VAD node metadata
-    f_info = memfrs_q_field(jmmvad, "u");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, mmvad_ptr+offset, (uint8_t*)&u, sizeof(u), 0 );
-    memfrs_close_field(f_info);
-
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&u, sizeof(u), mmvad_ptr, false, "_MMVAD_SHORT", 1, "#u");
     vad_type = u & 0b111;
-    //printf("VAD type: %s(%x)\n", MI_VAD_TYPE_STR[vad_type], vad_type);
-
-    vad_protection =  ((u >> 3) & 0b11111);
-    //printf("Permission: %s(%x)\n", PAGE_PERMISSION_STR[vad_protection], vad_protection);
+    vad_protection = ((u >> 3) & 0b11111);
+    //printf("VAD type: %s(%x)\n", MI_VAD_TYPE_STR[vad_type], vad_type); // only for checking
+    //printf("Permission: %s(%x)\n", PAGE_PERMISSION_STR[vad_protection], vad_protection); // only for checking
 
     vad->start_viraddr = start_viraddr; 
     vad->end_viraddr = end_viraddr;
@@ -151,147 +139,84 @@ vad_node* parse_mmvad_node(uint64_t mmvad_ptr, CPUState *cpu)
     vad->filename = NULL;   
 
     // Check if mode is immage mapping
-    if(vad_type != VadImageMap)
+    if (vad_type != VadImageMap)
         return vad;
 
     // Quey image filename by following path 
     // _MMVAD->Subsection->ControlArea->FilePointer/_FILE_OBJECT->FileName
-    jmmvad = memfrs_q_struct("_MMVAD");
-    f_info = memfrs_q_field(jmmvad, "Subsection");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, mmvad_ptr+offset, (uint8_t*)&subsection_ptr, sizeof(subsection_ptr), 0 );
-    jobj = f_info->jobject_type;
-    memfrs_close_field(f_info);
-
-    f_info = memfrs_q_field( jobj, "ControlArea" ); //ControlArea
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, subsection_ptr+offset, (uint8_t*)&control_area_ptr, sizeof(control_area_ptr), 0 );
-    jobj = f_info->jobject_type;
-    memfrs_close_field(f_info);
-
-    f_info = memfrs_q_field( jobj, "FilePointer" );
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, control_area_ptr+offset, (uint8_t*)&file_pointer_ptr, sizeof(file_pointer_ptr), 0 );
-    jobj = f_info->jobject_type;
-    memfrs_close_field(f_info);
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&file_pointer_ptr, sizeof(file_pointer_ptr), mmvad_ptr, false, "_MMVAD", 3, "*Subsection", "*ControlArea", "*FilePointer");
 
     // _FILE_OBJECT is always aligned, mask out filepointer's lowest byte, which s used to save metadata 
     file_pointer_ptr &= 0xfffffffffffffff0;
-
-    if(file_pointer_ptr==0)
+    if (file_pointer_ptr == 0)
         return vad;
 
-    jobj = memfrs_q_struct("_FILE_OBJECT");
-    f_info = memfrs_q_field( jobj, "FileName" );
-    offset = f_info->offset;
-    file_name_unicode_ptr = file_pointer_ptr+offset;
-    jobj = f_info->jobject_type;
-    memfrs_close_field(f_info);
-
     // Parse the unicode string
-    filename = parse_unicode_strptr(file_name_unicode_ptr, cpu);
+    memfrs_get_nested_field_offset(&offset_filename_to_fileobj, "_FILE_OBJECT", 1, "FileName");
+    filename = parse_unicode_strptr(file_pointer_ptr + offset_filename_to_fileobj, 0, cpu);
     vad->filename = filename;
+
     return vad;
 }
 
-// UT_array's eelement structure for vad address
-UT_icd vad_adr_icd = {sizeof(uint64_t), NULL, NULL, NULL };
-UT_icd vad_node_icd = {sizeof(vad_node), NULL, NULL, NULL };
 
-/*********************************************************************************
-void memfrs_traverse_vad_tree(uint64_t eprocess_ptr, CPUState *cpu)
 
-1. Get vad root node by the eprocess_ptr
-2. Traversal vad tree, which is AVL tree
-
-INPUT: uint64_t eprocess_ptr    the virtual address to the eprocess structure
-       CPUState *cpu            pointer to current cpu
-
-OUTPUT: void
-**********************************************************************************/
-UT_array* memfrs_traverse_vad_tree(uint64_t eprocess_ptr, CPUState *cpu)
+extern UT_array* memfrs_traverse_vad_tree(uint64_t eprocess_ptr, CPUState *cpu)
 {
-    int offset_vadroot_to_eprocess = 0;
-    int offset_left_to_vadnode = 0;
-    int offset_right_to_vadnode = 0;
-
     UT_array *vad_adr_queue;
-    uint64_t vad_root, left, right;
-    uint64_t* current_node;
     UT_array *vad_node_queue;
+    uint64_t *current_node;
+    uint64_t vad_root = 0,
+             left,
+             right;
+
+    // Check if ds metadata is already loaded
+    if (memfrs_check_struct_info() == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_STRUCTURE;
+        return NULL;
+    }
+
 
     // Initialize vad_node_queue, use UT_arry as the queue 
     utarray_new(vad_adr_queue, &vad_adr_icd);
     utarray_new(vad_node_queue, &vad_node_icd);
 
-
-    json_object* jeprocess = NULL;
-    json_object* jvadnode = NULL;
-    field_info* f_info = NULL;
-
-    // Check if ds metadata is already loaded
-    if( memfrs_check_struct_info() == 0)
-    {
-        printf("Data structure information is not loaded\n");
+    // Read vad root node from memory
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&vad_root, sizeof(vad_root), eprocess_ptr, false, "_EPROCESS", 1, "#VadRoot") == -1)
         return NULL;
-    }
-
-    // Prepare some offset that will be used later
-    // Find the vad root offset to the eprocess
-    jeprocess = memfrs_q_struct("_EPROCESS");
-    f_info = memfrs_q_field(jeprocess, "VadRoot");
-
-    offset_vadroot_to_eprocess = f_info->offset;
-    memfrs_close_field(f_info);
-
-    // Find the pointer offset to the Left node
-    jvadnode = memfrs_q_struct("_RTL_BALANCED_NODE");
-    f_info = memfrs_q_field(jvadnode, "Left");
-    offset_left_to_vadnode = f_info->offset;
-    memfrs_close_field(f_info);
-
-    // Find the pointer offset to the Right node
-    f_info = memfrs_q_field(jvadnode, "Right");
-    offset_right_to_vadnode = f_info->offset;
-    memfrs_close_field(f_info);
-
-    // Read vad root node from memory 
-    cpu_memory_rw_debug( cpu, eprocess_ptr + offset_vadroot_to_eprocess, (uint8_t*)&vad_root, sizeof(vad_root), 0 );
-    //printf("vad root: %" PRIx64 "\n", vad_root);
+    if (vad_root == 0)
+        return NULL;
+    //printf("vad root: %" PRIx64 "\n", vad_root); // only for checking
 
     // Put vad root into queue as first element
-    if(vad_root!=0)
-        utarray_push_back(vad_adr_queue, &vad_root);
-   
+    utarray_push_back(vad_adr_queue, &vad_root);
+
     // Walk through the QUEUE
-    while(utarray_len(vad_adr_queue) != 0)
-    {
+    while(utarray_len(vad_adr_queue) != 0) {
         current_node = (uint64_t*)utarray_back(vad_adr_queue);
-        //printf("Find Node %" PRIx64 "\n", *current_node);
+        //printf("Find Node %" PRIx64 "\n", *current_node); // only for checking
 
         // Parse the vad node   
         vad_node* vad = parse_mmvad_node(*current_node, cpu);
         utarray_push_back(vad_node_queue, vad);
 
         // Read Left node
-        cpu_memory_rw_debug( cpu, (*current_node)+offset_left_to_vadnode, (uint8_t*)&left, sizeof(left), 0 );
+        memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&left, sizeof(left), (*current_node), false, "_RTL_BALANCED_NODE", 1, "#Left");
 
         // Read Right node
-        cpu_memory_rw_debug( cpu, (*current_node)+offset_right_to_vadnode, (uint8_t*)&right, sizeof(right), 0 );
+        memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&right, sizeof(right), (*current_node), false, "_RTL_BALANCED_NODE", 1, "#Right");
 
         // Find the next node
         utarray_pop_back(vad_adr_queue);
    
-        //printf("Node left %" PRIx64 "\n", left);
-        //printf("Node left %" PRIx64 "\n", right);
-
         // Push node into queue if the node found
-        if(left != 0)
+        if (left != 0)
             utarray_push_back(vad_adr_queue, &left);
-        if(right != 0)
+        if (right != 0)
             utarray_push_back(vad_adr_queue, &right);
+        //printf("Node left %" PRIx64 "\n", left);  // only for checking
+        //printf("Node left %" PRIx64 "\n", right); // only for checking
     }
 
     return vad_node_queue;
 }
-

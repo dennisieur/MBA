@@ -3,6 +3,7 @@
  *
  *  Copyright (c)   2016 Chiawei Wang
  *                  2016 ChongKuan Chen
+ *                  2016 ELin Ho
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -17,6 +18,8 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
+
 
 #if !defined(CONFIG_MEMFRS_TEST)
 #include "qemu-common.h"
@@ -45,28 +48,31 @@
 
 #include <stdarg.h>
 
+#define dt_buf_size 0x30
+#define dt_type_info_size 64
+
+
+
 /* Global Variable */
-uint64_t g_kpcr_ptr = 0;
+uint64_t g_kpcr_ptr;
 json_object *g_struct_info = NULL;
 json_object *g_globalvar_info = NULL;
 
 MEMFRS_ERRNO memfrs_errno;
 
-/*******************************************************************
-void hexdump(Monitor *mon, uint8_t* buf, size_t length)
-Get the memory content in virtual memory
-INPUT:    Monitor *mon           Monitor
-          uint8_t* buf           target buffer
-          size_t length          length of buffer
-OUTPUT:   void
-*******************************************************************/
-void hexdump(Monitor *mon, uint8_t* buf, size_t length)
+
+
+/* Private API */
+
+
+
+extern void hexdump(Monitor *mon, uint8_t* buf, size_t length)
 {
     int i,j ;
 
-    for(i = 0 ; i < (int)length ; i+=0x10) {
+    for (i=0 ; i<(int)length ; i+=0x10) {
         monitor_printf(mon, "%02x: ", i);
-        for(j = 0; j< 0x10; j++){
+        for (j=0; j<0x10; ++j) {
             if(i+j > (int)length)
                 monitor_printf( mon, "   " );
             else
@@ -75,139 +81,187 @@ void hexdump(Monitor *mon, uint8_t* buf, size_t length)
 
         monitor_printf(mon, "  |  ");
 
-        for(j = 0; j< 0x10; j++){
-            if(i+j > (int)length)
-                monitor_printf( mon, "-" );
-            else if(buf[i+j] >= 0x20 && buf[i+j] <= 0x7e)
-                monitor_printf( mon, "%c" , buf[i+j]);
+        for (j=0; j<0x10; ++j){
+            if (i+j > (int)length)
+                monitor_printf(mon, "-");
+            else if (buf[i+j] >= 0x20 && buf[i+j] <= 0x7e)
+                monitor_printf(mon, "%c" , buf[i+j]);
             else
-                monitor_printf( mon, "." );
+                monitor_printf(mon, ".");
         }
 
         monitor_printf(mon, "|\n");
     }
-
 }
 
-/*******************************************************************
-char* parse_unicode_strptr(uint64_t ustr_ptr, CPUState *cpu)
-Get the memory content in virtual memory
-INPUT:    uint64_t ustr_ptr      unicode structure address
-          CPUState *cpu          Current cpu
-OUTPUT:   char*                  ascii string
-*******************************************************************/
-char* parse_unicode_strptr(uint64_t ustr_ptr, CPUState *cpu)
+
+
+extern char* parse_unicode_strptr(uint64_t ustr_ptr, uint64_t cr3, CPUState *cpu)
 {
-    json_object* ustr = NULL;
-    field_info* f_info = NULL;
-    uint16_t length, max_length;
-    uint64_t buf_ptr;
-    int offset;
-    uint8_t *buf;
-    char* str;
+    char *str;
+
     int i;
+    uint64_t buf_ptr;
+    uint16_t length = 0,
+             max_length = 0;
+    uint8_t *buf;
 
-    ustr = memfrs_q_struct("_UNICODE_STRING");
 
-    f_info = memfrs_q_field(ustr, "MaximumLength");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&max_length, sizeof(max_length), 0 );
-    memfrs_close_field(f_info);
-
-    f_info = memfrs_q_field(ustr, "Length");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&length, sizeof(length), 0 );
-    memfrs_close_field(f_info);
-  
-    if(length == 0 || length > 256 || max_length ==0 || max_length > 256)
+    // Get maximum length
+    if (memfrs_get_mem_struct_content(cpu, cr3, (uint8_t*)&max_length, sizeof(max_length), ustr_ptr, false, "_UNICODE_STRING", 1, "#MaximumLength") == -1)
         return NULL;
 
-    f_info = memfrs_q_field(ustr, "Buffer");
-    offset = f_info->offset;
-    cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&buf_ptr, sizeof(buf_ptr), 0 );
-    memfrs_close_field(f_info); 
+    // Get length
+    if (memfrs_get_mem_struct_content(cpu, cr3, (uint8_t*)&length, sizeof(length), ustr_ptr, false, "_UNICODE_STRING", 1, "#Length") == -1)
+        return NULL;
 
-    buf = (uint8_t*)malloc(max_length+2);
+    if (length == 0 || max_length ==0 )
+        return NULL;
+
+    // Get buffer
+    if (memfrs_get_mem_struct_content(cpu, cr3, (uint8_t*)&buf_ptr, sizeof(buf_ptr), ustr_ptr, false, "_UNICODE_STRING", 1, "#Buffer") == -1)
+        return NULL;
+
+    buf = (uint8_t*)malloc(max_length+1);
+    if (memfrs_get_virmem_content( cpu, cr3, buf_ptr, max_length, (uint8_t*)buf ) == -1) {
+        free(buf);
+        return NULL;
+    }
+
+    //Hardcode Unicode Parse
     str = (char*)malloc(max_length+1);
     memset(str, 0, max_length+1);
-    cpu_memory_rw_debug( cpu, buf_ptr, buf, max_length, 0 );
-    //Hardcode Unicode Parse
-    //wcstombs(str, (const wchar_t *)buf, max_length);
-    for(i=0; i<max_length;i+=2)
+    for (i=0 ; i<max_length ; i+=2)
         str[i/2] = buf[i];   
-    str[i] = 0x00;
+    str[i] = '\0';
 
     free(buf);
     return str;
 }
 
-/*******************************************************************
-char* parse_unicode_str(uint8_t* ustr, CPUState *cpu)
-Get the memory content in virtual memory
-INPUT:    uint64_t ustr          unicode string
-          CPUState *cpu          Current cpu
-OUTPUT:   char*                  ascii string
-*******************************************************************/
-char* parse_unicode_str(uint8_t* ustr, CPUState *cpu)
+
+
+extern char* parse_unicode_str(uint8_t* ustr, CPUState *cpu)
 {
-    json_object* justr = NULL;
-    field_info* f_info = NULL;
-    uint16_t length, max_length;
-    uint64_t buf_ptr;
-    int offset;
-    uint8_t *buf;
-    char* str;
+    char *str;
+
     int i;
+    uint64_t buf_ptr;
+    uint16_t length = 0,
+             max_length = 0;
+    uint8_t *buf;
 
-    justr = memfrs_q_struct("_UNICODE_STRING");
+    int maxlength_offset_to_unicode,
+        length_offset_to_unicode,
+        buffer_offset_to_unicode;
 
-    f_info = memfrs_q_field(justr, "MaximumLength");
-    offset = f_info->offset;
-    max_length = *((uint16_t*)(ustr+offset));
-    //cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&max_length, sizeof(max_length), 0 );
-    memfrs_close_field(f_info);
+    memfrs_get_nested_field_offset(&maxlength_offset_to_unicode, "_UNICODE_STRING", 1, "MaximumLength");
+    memfrs_get_nested_field_offset(&length_offset_to_unicode, "_UNICODE_STRING", 1, "Length");
+    memfrs_get_nested_field_offset(&buffer_offset_to_unicode, "_UNICODE_STRING", 1, "Buffer");
 
-    f_info = memfrs_q_field(justr, "Length");
-    offset = f_info->offset;
-    length = *((uint16_t*)(ustr+offset));
-    //cpu_memory_rw_debug( cpu, ustr_ptr+offset, (uint8_t*)&length, sizeof(length), 0 );
-    memfrs_close_field(f_info);
+    max_length = *((uint16_t*)(ustr+maxlength_offset_to_unicode));
+    length = *((uint16_t*)(ustr+length_offset_to_unicode));
 
-    if(length == 0 || length > 256 || max_length ==0 || max_length > 256)
+    if (length == 0 || max_length == 0)
         return NULL;
 
-    f_info = memfrs_q_field(justr, "Buffer");
-    offset = f_info->offset;
-    buf_ptr = *((uint64_t*)(ustr+offset));
-    memfrs_close_field(f_info);
-    
-
+    buf_ptr = *((uint64_t*)(ustr+buffer_offset_to_unicode));
     buf = (uint8_t*)malloc(max_length+2);
+    if (cpu_memory_rw_debug(cpu, buf_ptr, buf, max_length, 0) != 0) {
+        free(buf);
+        return NULL;
+    }
+
     str = (char*)malloc(max_length+1);
     memset(str, 0, max_length+1);
-    cpu_memory_rw_debug( cpu, buf_ptr, buf, max_length, 0 );
+
     //Hardcode Unicode Parse
-    //wcstombs(str, (const wchar_t *)buf, max_length);
-    for(i=0; i<max_length;i+=2)
+    for (i=0 ; i<max_length ; i+=2)
         str[i/2] = buf[i];
-    str[i] = 0x00;
+    str[i] = '\0';
 
     free(buf);
     return str;
 }
 
 
-bool memfrs_check_struct_info(void)
+
+/* Public API */
+
+
+
+extern bool memfrs_kpcr_self_check(uint64_t kpcr_ptr)
 {
-    return (g_struct_info!=NULL)? 1 : 0;
+    uint64_t self_ptr = 0;
+    json_object* test_obj;
+    int offset_self_to_kpcr;
+
+    // Check if the data structure information is loaded
+    if (memfrs_check_struct_info() == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_STRUCTURE;
+        return false;
+    }
+
+    // Find the struct _KPCR
+    json_object_object_get_ex(g_struct_info, "_KPCR", &test_obj);
+    if (test_obj == NULL)
+        return false;
+
+    // Query field name Self in _KPCR structure
+    if (memfrs_get_nested_field_offset(&offset_self_to_kpcr, "_KPCR", 1, "Self") == -1)
+        return false;
+
+    // Read the concrete memory value in Self field
+    if (memfrs_get_mem_struct_content((CPUState*)current_cpu, 0, (uint8_t*)&self_ptr, sizeof(self_ptr), kpcr_ptr, false, "_KPCR", 1, "#Self") == -1) {
+        g_kpcr_ptr = 0;
+        return false;
+    }
+
+    // Check if the Self pointer point back to _KPCR structure, which is the hueristic check of _KPCR
+    if (kpcr_ptr != 0x0 && kpcr_ptr == self_ptr) {
+        return true;
+    }
+
+    g_kpcr_ptr = 0;
+    return false;
 }
 
-bool memfrs_check_globalvar_info(void)
+
+
+extern void memfrs_set_kpcr_ptr(uint64_t kpcr_ptr)
 {
-    return (g_globalvar_info!=NULL)? 1 : 0;
+    g_kpcr_ptr = kpcr_ptr;
 }
 
-field_info* memfrs_q_field( json_object* struc, const char* field_name )
+
+
+extern uint64_t memfrs_get_kpcr_ptr(void)
+{
+    return g_kpcr_ptr;
+}
+
+
+
+extern json_object* memfrs_q_struct(const char* ds_name)
+{
+    json_object* target = NULL;
+
+    // Query global structure info with structure name ds_name
+    // Restore the query result into target json_object
+    if (memfrs_check_struct_info() != 0)
+        json_object_object_get_ex(g_struct_info, ds_name, &target);
+    else
+        return NULL;
+
+    if (target == NULL)
+        memfrs_errno = MEMFRS_ERR_NOT_FOUND_JSON_FIELD;
+
+    return target;
+}
+
+
+
+extern field_info* memfrs_q_field( json_object* struc, const char* field_name )
 {
     json_object* target = NULL;
     json_object* tmp_jobject = NULL;
@@ -217,9 +271,8 @@ field_info* memfrs_q_field( json_object* struc, const char* field_name )
     // Query the field in the structures(struc) by the field_name
     // Save the result into target json object
     json_object_object_get_ex(struc, field_name, &target);
-    if(target == NULL)
-    {
-        printf("\"%s\" not found\n", field_name);
+    if (target == NULL) {
+        memfrs_errno = MEMFRS_ERR_NOT_FOUND_JSON_FIELD;
         return NULL;
     }
 
@@ -239,140 +292,290 @@ field_info* memfrs_q_field( json_object* struc, const char* field_name )
     f_info -> type_size = json_object_get_int(json_object_array_get_idx(target, 2));
     f_info -> pointer_dereference_count = json_object_get_int(json_object_array_get_idx(target, 3));
     
-    if(f_info -> pointer_dereference_count > 0)
+    if (f_info -> pointer_dereference_count > 0)
         f_info->is_pointer = true;
     else
         f_info->is_pointer = false;    
 
     // Put the json object of field type into fielf_info structure
-    if(g_struct_info != NULL)
+    if (memfrs_check_struct_info() != 0)
         json_object_object_get_ex(g_struct_info, f_info->type_name, &(f_info->jobject_type));
 
     return f_info;
 }
 
-int memfrs_close_field(field_info* field)
+
+
+extern int memfrs_load_structs(const char* type_filename)
 {
-    free(field);
-    return 0;
-}
+    json_object *struct_info = NULL,
+                *test_obj = NULL;
+    int return_value = 0;
 
-json_object* memfrs_q_struct(const char* ds_name)
-{
-    json_object* target = NULL;
-
-    // Query global structure info with structure name ds_name
-    // Restore the query result into target json_object
-    if(g_struct_info!=NULL)
-        json_object_object_get_ex(g_struct_info, ds_name, &target);
-    else
-        return NULL;
-    
-    if(target==NULL)
-        printf("%s not found\n", ds_name);
-
-    return target;
-}
-
-int memfrs_load_structs( const char* type_filename)
-{
-    json_object *struct_info = NULL, *test_obj = NULL;
-    if(g_struct_info==NULL){
+    if (memfrs_check_struct_info() == 0) {
         g_struct_info = json_object_from_file(type_filename);
     }
-    else{
+    else {
         struct_info = json_object_from_file(type_filename);
-        json_object_object_foreach(struct_info, key, val){
+        json_object_object_foreach(struct_info, key, val) {
             json_object_object_get_ex(g_struct_info, key, &test_obj);
-            if(test_obj!=NULL){
-                printf("The json object with key %s has been overwritten.\n", key);
-            }
+            if (test_obj != NULL)
+                ++return_value;
             json_object_object_add(g_struct_info, key, val);
         }
     }
 
+    return return_value;
+}
+
+
+
+extern int memfrs_load_globalvar( const char* gvar_filename)
+{
+    json_object *struct_info = NULL,
+                *test_obj = NULL;
+    int return_value = 0;
+
+    if (memfrs_check_globalvar_info() == 0) {
+        g_globalvar_info = json_object_from_file(gvar_filename);
+    }
+    else {
+        struct_info = json_object_from_file(gvar_filename);
+        json_object_object_foreach(struct_info, key, val) {
+            json_object_object_get_ex(g_globalvar_info, key, &test_obj);
+            if (test_obj != NULL)
+                ++return_value;
+            json_object_object_add(g_globalvar_info, key, val);
+        }
+    }
+
+    return return_value;
+}
+
+
+
+extern bool memfrs_check_struct_info(void)
+{
+    return (g_struct_info!=NULL)? true : false;
+}
+
+
+
+extern bool memfrs_check_globalvar_info(void)
+{
+    return (g_globalvar_info!=NULL)? true : false;
+}
+
+
+
+UT_icd adr_icd = {sizeof(uint64_t), NULL, NULL, NULL };
+extern UT_array* memfrs_scan_virmem( CPUState *cpu, uint64_t start_addr, uint64_t end_addr, const char* pattern, int length )
+{
+    uint64_t i;
+    UT_array *match_addr;
+
+    if (start_addr >= end_addr) {
+        memfrs_errno = MEMFRS_ERR_INVALID_MBA_MEMFRS_COMMAND;
+        return NULL;
+    }
+
+    uint8_t* buf = (uint8_t*)malloc(length);
+    memset(buf, 0, length);
+    if (buf == NULL) {
+        memfrs_errno = MEMFRS_ERR_ALLOC_FAILED;
+        return NULL;
+    }
+
+    utarray_new(match_addr, &adr_icd);
+
+    for (i=start_addr ; i<end_addr-length+1 ; ++i) {
+        cpu_memory_rw_debug(cpu, i, buf, length, 0);
+        if (memcmp(buf, pattern, length) == 0)
+            utarray_push_back(match_addr, &i);
+    }
+    return match_addr;
+}
+
+
+
+extern UT_array* memfrs_scan_phymem(uint64_t start_addr, uint64_t end_addr, const char* pattern , int length)
+{
+    uint64_t i;
+    UT_array *match_addr;
+    if (start_addr >= end_addr) {
+        memfrs_errno = MEMFRS_ERR_INVALID_MBA_MEMFRS_COMMAND;
+        return NULL;
+    }
+
+    uint8_t* buf = (uint8_t*)malloc(length);
+    memset(buf, 0, length);
+    if (buf == NULL) {
+        memfrs_errno = MEMFRS_ERR_ALLOC_FAILED;
+        return NULL;
+    }
+
+    utarray_new( match_addr, &adr_icd);
+
+    for (i=start_addr; i<end_addr-length+1; ++i) {
+        cpu_physical_memory_read(i, buf, length);
+        if (memcmp(buf, pattern, length) == 0)
+            utarray_push_back(match_addr, &i);
+    }
+    return match_addr;
+}
+
+
+
+extern int memfrs_get_virmem_content(CPUState *cpu, uint64_t cr3, uint64_t target_addr, uint64_t target_length, uint8_t* buf)
+{
+    X86CPU copied_cpu;
+    memcpy(&copied_cpu, X86_CPU(cpu), sizeof(copied_cpu));
+
+    if (cr3 != 0) {
+        copied_cpu.env.cr[3] = cr3;
+    }
+
+    if (cpu_memory_rw_debug((CPUState *)&copied_cpu, target_addr, (uint8_t*)buf, target_length, 0) != 0) {
+        memfrs_errno = MEMFRS_ERR_MEMORY_READ_FAILED;
+        return -1;
+    }
+
     return 0;
 }
 
-bool memfrs_kpcr_self_check( uint64_t kpcr_ptr ) 
+
+
+extern json_object* memfrs_q_globalvar(const char* gvar_name)
 {
+    json_object* target = NULL;
 
-    uint64_t self_ptr = 0;
-    json_object* test_obj;
-    json_object* jkpcr =NULL;
-    field_info* f_info = NULL;
-    int offset_self_to_kpcr = 0;
-
-    //Check if the global data structure info is load, if not abort check.
-    if(g_struct_info == NULL)
-    {
-        return false;
+    // Check if the global data structure information is loaded
+    if (memfrs_check_globalvar_info() == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_GLOBAL_STRUCTURE;
+        return NULL;
     }
 
-    // Find the struct _KPCR
-    json_object_object_get_ex(g_struct_info, "_KPCR", &test_obj);
-    if(test_obj==NULL)
-        return false;
-
-    jkpcr = memfrs_q_struct("_KPCR");
-    if(jkpcr==NULL)
-        return false;
-
-    // Query field name Self in _KPCR structure
-    f_info = memfrs_q_field(jkpcr, "Self");
-
-    offset_self_to_kpcr = f_info->offset;
-    memfrs_close_field(f_info);
-
-    // Read the concrete memory value in Self field
-    if( cpu_memory_rw_debug(current_cpu, kpcr_ptr + offset_self_to_kpcr, (uint8_t*)&self_ptr, sizeof(self_ptr), 0) != 0 )
-    {
-        g_kpcr_ptr = 0;
-        return false;
+    // Query global structure info with structure name ds_name
+    // Restore the query result into target json_object
+    json_object_object_get_ex(g_globalvar_info, gvar_name, &target);
+    if (target == NULL) {
+        memfrs_errno = MEMFRS_ERR_NOT_FOUND_GLOBAL_STRUCTURE_INFO;
     }
 
-    // Check if the Self pointer point back to _KPCR structure, which is the hueristic check of _KPCR
-    if( kpcr_ptr == self_ptr ) {
-        g_kpcr_ptr = kpcr_ptr;
-        printf("KPCR found %lx\n", g_kpcr_ptr);
-        return true;
-    }
-
-    g_kpcr_ptr = 0;
-    return false;
+    return target;
 }
 
-float memfrs_get_windows_version( uint64_t kpcr_ptr, CPUState *cpu )
+
+
+extern int64_t memfrs_gvar_offset(json_object* gvarobj)
+{
+    uint64_t offset;
+    json_object* tmp_jobject;
+
+    if (gvarobj == NULL) {
+        memfrs_errno = MEMFRS_ERR_INVALID_JSON_OBJ;
+        return -1;
+    }
+
+    tmp_jobject = json_object_array_get_idx(gvarobj, 0);
+    offset = json_object_get_int(tmp_jobject);
+    return offset;
+}
+
+
+
+extern reverse_symbol* memfrs_build_gvar_lookup_map(void)
+{
+    reverse_symbol *rev_symtab = NULL;
+
+    // Check if kernel base and global var exist
+    uint64_t kernel_base = memfrs_get_nt_kernel_base();
+    if (kernel_base == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_FOUND_KERNEL_BASE;
+        return NULL;
+    }
+    if (memfrs_check_globalvar_info() == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_GLOBAL_STRUCTURE;
+        return NULL;
+    }
+
+    json_object_object_foreach (g_globalvar_info, key, val) {
+        json_object* tmp_jobject = json_object_array_get_idx(val, 0);
+        uint64_t offset = json_object_get_int(tmp_jobject);
+        reverse_symbol* rec = (reverse_symbol*)malloc(sizeof(reverse_symbol));
+
+        rec->offset = offset;
+        rec->symbol = key;
+
+        HASH_ADD_INT(rev_symtab, offset, rec);
+    }
+
+    return rev_symtab;
+}
+
+
+
+extern char* memfrs_get_symbolname_via_address(reverse_symbol* rsym_tab, int offset)
+{
+    reverse_symbol* sym = NULL;
+
+    if (rsym_tab == NULL)
+        return NULL;
+
+    HASH_FIND_INT(rsym_tab, &offset, sym);
+
+    if (sym == NULL)
+        return NULL;
+
+    return sym->symbol;
+}
+
+
+
+extern int memfrs_free_reverse_lookup_map(reverse_symbol* rsym_tab)
+{
+    reverse_symbol *current_sym, *tmp;
+
+    if (rsym_tab == NULL)
+        return -1;
+
+    HASH_ITER(hh, rsym_tab, current_sym, tmp) {
+        HASH_DEL(rsym_tab, current_sym);
+        free(current_sym);
+    }
+    return 0;
+}
+
+
+
+extern float memfrs_get_windows_version(CPUState *cpu)
 {
     float version;
     json_object *struct_type;
     json_object *gvar = NULL;
     field_info *info = NULL;
 
+    uint64_t kpcr_ptr = memfrs_get_kpcr_ptr();
 
     // Check if the data structure information is loaded
-    if(g_struct_info == NULL)
-    {
+    if (memfrs_check_struct_info() == 0) {
         memfrs_errno = MEMFRS_ERR_NOT_LOADED_STRUCTURE;
         return -1.0;
     }
     //Check if the data structure information is loaded
-    if(g_struct_info == NULL)
-    {
+    if (memfrs_check_globalvar_info() == 0) {
         memfrs_errno = MEMFRS_ERR_NOT_LOADED_GLOBAL_STRUCTURE;
         return -1.0;
     }
 
     //Check if kpcr is already found
-    if(kpcr_ptr == 0)
-    {
+    if (kpcr_ptr == 0) {
         memfrs_errno = MEMFRS_ERR_NOT_FOUND_KPCR;
         return -1.0;
     }
 
     //Check the cpu pointer valid
-    if(cpu == NULL)
-    {
+    if (cpu == NULL) {
         memfrs_errno = MEMFRS_ERR_INVALID_CPU;
         return -1.0;
     }
@@ -391,29 +594,29 @@ float memfrs_get_windows_version( uint64_t kpcr_ptr, CPUState *cpu )
 
 
     // Windows 7 introduces TypeIndex into the object header.
-    if( (struct_type = memfrs_q_struct("_OBJECT_HEADER")) != NULL && (info = memfrs_q_field(struct_type, "TypeIndex")) != NULL ){
+    if ((struct_type = memfrs_q_struct("_OBJECT_HEADER")) != NULL && (info = memfrs_q_field(struct_type, "TypeIndex")) != NULL) {
 
         // Windows 10 introduces a cookie for object types.
         gvar = memfrs_q_globalvar("ObHeaderCookie");
-        if( gvar != NULL )
+        if (gvar != NULL)
             version = 10.0;
 
         // Windows 7
-        else if( (struct_type = memfrs_q_struct("_EPROCESS")) != NULL &&
+        else if ((struct_type = memfrs_q_struct("_EPROCESS")) != NULL &&
                  (info = memfrs_q_field(struct_type, "VadRoot.BalancedRoot")) != NULL &&
-                 (strcmp(info->type_name, "_MMADDRESS_NODE")==0) )
+                 (strcmp(info->type_name, "_MMADDRESS_NODE")==0))
             version = 6.1;
 
         // Windows 8 uses _MM_AVL_NODE as the VAD traversor struct.
-        else if( (struct_type = memfrs_q_struct("_EPROCESS")) != NULL &&
+        else if ((struct_type = memfrs_q_struct("_EPROCESS")) != NULL &&
                  (info = memfrs_q_field(struct_type, "VadRoot")) != NULL &&
-                 (strcmp(info->type_name, "_MM_AVL_TABLE")==0) )
+                 (strcmp(info->type_name, "_MM_AVL_TABLE")==0))
             version = 6.2;
 
         // Windows 8.1 and on uses _RTL_AVL_TREE
-        else if( (struct_type = memfrs_q_struct("_EPROCESS")) != NULL &&
+        else if ((struct_type = memfrs_q_struct("_EPROCESS")) != NULL &&
                  (info = memfrs_q_field(struct_type, "VadRoot")) != NULL &&
-                 (strcmp(info->type_name, "_RTL_AVL_TREE")==0) )
+                 (strcmp(info->type_name, "_RTL_AVL_TREE")==0))
             version = 6.3;
 
         // Unknown windows version
@@ -422,280 +625,115 @@ float memfrs_get_windows_version( uint64_t kpcr_ptr, CPUState *cpu )
     }
 
     // Windows XP did not use a BalancedRoot for VADs.
-    else if( (struct_type = memfrs_q_struct("_MM_AVL_TABLE")) != NULL && (info = memfrs_q_field(struct_type, "BalancedRoot")) == NULL )
+    else if ((struct_type = memfrs_q_struct("_MM_AVL_TABLE")) != NULL && (info = memfrs_q_field(struct_type, "BalancedRoot")) == NULL)
         version = 5.1;
 
     else
         version = 0.0;
 
+    if(info != NULL)
+        free(info);
 
     return version;
 }
 
-current_thread *memfrs_get_current_thread( CPUState *cpu)
+
+
+extern current_thread *memfrs_get_current_thread( CPUState *cpu)
 {
     current_thread *thread_data=NULL;
+
+    uint64_t kpcr_ptr = memfrs_get_kpcr_ptr();
+
     uint64_t thread_ptr,
-             _CLIENT_ID_ptr,
-             eprocess_ptr,
-             pid_ptr,
-             tid_ptr;
-    uint64_t pid, tid;
+             eprocess_ptr;
+    uint64_t pid,
+             tid;
     uint8_t image_file_name[16];        // Max size of image name in _EPROCESS is 16
 
-    json_object *struct_type;
-    field_info *info = NULL;
 
-    if(g_kpcr_ptr){
-        // Get Current thread address
-        memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&thread_ptr, sizeof(thread_ptr), g_kpcr_ptr, false, "_KPCR", 2, "*CurrentPrcb", "*CurrentThread");
-
-        // Get address of PID and TID
-        struct_type = memfrs_q_struct("_ETHREAD");
-        if (struct_type == NULL)
-            return NULL;
-        info = memfrs_q_field(struct_type, "Cid");
-        _CLIENT_ID_ptr = thread_ptr + info->offset;
-
-        struct_type = memfrs_q_struct("_CLIENT_ID");
-        if (struct_type == NULL)
-            return NULL;
-        info = memfrs_q_field(struct_type, "UniqueProcess");
-        pid_ptr = _CLIENT_ID_ptr + info->offset;
-        info = memfrs_q_field(struct_type, "UniqueThread");
-        tid_ptr = _CLIENT_ID_ptr + info->offset;
-
-        // Get PID and TID
-        memfrs_get_virmem_content(cpu, 0, pid_ptr, sizeof(pid), (uint8_t*)&pid);
-        memfrs_get_virmem_content(cpu, 0, tid_ptr, sizeof(tid), (uint8_t*)&tid);
-
-        // Get current image name
-        memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), thread_ptr, false, "_KTHREAD", 1, "*Process");
-        memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&image_file_name, sizeof(image_file_name), eprocess_ptr, false, "_EPROCESS", 1, "*ImageFileName");
-        image_file_name[15]='\0';
-
-        // Set values in return structure
-        thread_data = (current_thread*)malloc(sizeof(current_thread));
-        thread_data->image_file_name = (char*)malloc(16);
-        thread_data->unique_thread = tid;
-        thread_data->unique_process = pid;
-        sprintf(thread_data->image_file_name, "%s", image_file_name);
+    // Check if the data structure information is already loaded
+    if (memfrs_check_struct_info() == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_STRUCTURE;
+        return NULL;
     }
+    // Check if kpcr is already found
+    if (kpcr_ptr == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_FOUND_KPCR;
+        return NULL;
+    }
+    // Check the cpu pointer is valid
+    if (cpu == NULL) {
+        memfrs_errno = MEMFRS_ERR_INVALID_CPU;
+        return NULL;
+    }
+
+
+    // Get Current thread address
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&thread_ptr, sizeof(thread_ptr), kpcr_ptr, false, "_KPCR", 2, "*CurrentPrcb", "*CurrentThread");
+    // Get PID and TID
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&pid, sizeof(pid), thread_ptr, false, "_ETHREAD", 2, "#Cid", "#UniqueProcess");
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&tid, sizeof(tid), thread_ptr, false, "_ETHREAD", 2, "#Cid", "#UniqueThread");
+
+    // Get current image name
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), thread_ptr, false, "_KTHREAD", 1, "*Process");
+    memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&image_file_name, sizeof(image_file_name), eprocess_ptr, false, "_EPROCESS", 1, "*ImageFileName");
+    image_file_name[15]='\0';
+
+    // Set values in return structure
+    thread_data = (current_thread*)malloc(sizeof(current_thread));
+    thread_data->tid = tid;
+    thread_data->pid = pid;
+    snprintf(thread_data->image_file_name, 16, "%s", image_file_name);
 
     return thread_data;
 }
 
-UT_icd adr_icd = {sizeof(uint64_t), NULL, NULL, NULL };
-UT_array* memfrs_scan_virmem( CPUState *cpu, uint64_t start_addr, uint64_t end_addr, const char* pattern, int length ) 
+
+
+extern int memfrs_display_type(Monitor *mon, CPUState *cpu, uint64_t addr, const char* struct_name)
 {
-    uint64_t i;
+    monitor_printf(mon, "%s\n", struct_name);
+    int i;
+    json_object* jobj = memfrs_q_struct(struct_name);
+    uint8_t buf[dt_buf_size];
+    char type_info[dt_type_info_size];
 
-    if(start_addr >= end_addr){
-        printf("end_addr is not less than start_addr\n");
-        return NULL;
-    }
-
-    uint8_t* buf = (uint8_t*)malloc(length);
-    UT_array *match_addr;
-
-    memset(buf, 0, length);
-
-    if(buf == NULL){
-        printf("Cannot allocate memory for do_show_memory_taint_map()\n");
-        return NULL;
-    }
-
-    utarray_new( match_addr, &adr_icd);
-
-    printf("Scan for pattern %s\n", pattern);
-
-    for(i = start_addr; i < end_addr-length+1; i++)
-    {
-        cpu_memory_rw_debug(cpu, i, buf, length, 0);
-        if(memcmp(buf, pattern, length)==0)
-        {
-            printf("pattern found %lx\n", i);
-            utarray_push_back(match_addr, &i);
-        }
-    }
-    return match_addr;
-}
-
-UT_array* memfrs_scan_phymem( uint64_t start_addr, uint64_t end_addr, const char* pattern , int length ) 
-{
-    uint64_t i;
-    UT_array *match_addr;
-    if(start_addr >= end_addr){
-        printf("end_addr is not less than start_addr\n");
-        return NULL;
-    }
-
-    uint8_t* buf = (uint8_t*)malloc(length);
-    if(buf == NULL){
-        printf("Cannot allocate memory for memfrs_scan_phymem()\n");
-        return NULL;
-    }
-
-    utarray_new( match_addr, &adr_icd);
-
-    printf("Scan for pattern %s\n", pattern);
-    for(i = start_addr; i < end_addr-length+1; i++)
-    {
-        cpu_physical_memory_read(i, buf, length);
-        if(memcmp(buf, pattern, length)==0)
-        {
-            printf("pattern found %lx\n", i);
-            utarray_push_back(match_addr, &i);
-        }
-    }
-    return match_addr;
-}
-
-int memfrs_get_virmem_content( CPUState *cpu, uint64_t cr3, uint64_t target_addr, uint64_t target_length, uint8_t* buf)
-{
-    X86CPU copied_cpu;
-    int ret;
-    memcpy(&copied_cpu, X86_CPU(cpu), sizeof(copied_cpu));
-
-    if(cr3 != 0)
-    {
-        copied_cpu.env.cr[3] = cr3;
-    }
-
-    ret = cpu_memory_rw_debug((CPUState *)&copied_cpu, target_addr, (uint8_t*)buf, target_length, 0);
-    if(ret != 0){
-        //printf("Fail to read virtual memory\n");
-        return -1;
-    }
-    return 0;
-}
-
-int memfrs_load_globalvar( const char* gvar_filename)
-{
-    g_globalvar_info = json_object_from_file(gvar_filename);
-    return 0;
-}
-
-json_object* memfrs_q_globalvar(const char* gvar_name)
-{
-    json_object* target = NULL;
-
-    if(g_globalvar_info==NULL)
-        return NULL;
-
-    // Query global structure info with structure name ds_name
-    // Restore the query result into target json_object 
-    json_object_object_get_ex(g_globalvar_info, gvar_name, &target);
-
-    if(target==NULL)
-        printf("%s not found\n", gvar_name);
-    return target;
-}
-
-int64_t memfrs_gvar_offset(json_object* gvarobj)
-{
-    if(gvarobj==NULL)
-        return -1;
-    json_object* tmp_jobject = json_object_array_get_idx(gvarobj, 0);
-    uint64_t offset = json_object_get_int(tmp_jobject);
-    return offset;
-}
-
-reverse_symbol* memfrs_build_gvar_lookup_map(void)
-{
-    //json_object* lookup_map = NULL;
-    // Check if kernel base and global var exist
-    uint64_t kernel_base = memfrs_get_nt_kernel_base();
-    if( kernel_base ==0 ){
-        printf("Kernel not found\n");
-        return NULL;
-    }
-    if( g_globalvar_info==NULL ){
-        printf("gvar information not found\n");
-        return NULL;
-    }
-    
-    //lookup_map = json_object_new_object();
-    reverse_symbol *rev_symtab = NULL; 
-    json_object_object_foreach( g_globalvar_info, key, val){
-        json_object* tmp_jobject = json_object_array_get_idx(val, 0);
-        uint64_t offset = json_object_get_int(tmp_jobject);
-        reverse_symbol* rec = (reverse_symbol*)malloc(sizeof(reverse_symbol)); 
-        rec->offset = offset;
-        rec->symbol = key;
-        HASH_ADD_INT( rev_symtab, offset, rec ); 
-    }
-    return rev_symtab;
-}
-
-char* memfrs_get_symbolname_via_address(reverse_symbol* rsym_tab, int offset)
-{
-    reverse_symbol* sym = NULL;
-
-    if(rsym_tab == NULL)
-        return NULL;
-
-    HASH_FIND_INT(rsym_tab, &offset, sym);
-
-    if(sym == NULL)
-        return NULL;
-    return sym->symbol; 
-}
-
-int memfrs_free_reverse_lookup_map(reverse_symbol* rsym_tab)
-{
-    reverse_symbol *current_sym, *tmp;
-
-    if(rsym_tab == NULL)
+    if (jobj == NULL)
         return -1;
 
-    HASH_ITER(hh, rsym_tab, current_sym, tmp){
-        HASH_DEL(rsym_tab, current_sym);
-        free(current_sym);
-    }
-    return 0;
-}
-
-int memfrs_display_type(CPUState *cpu, uint64_t addr, const char* struct_name)
-{
-    printf("%s\n", struct_name);
-    json_object* jobj = memfrs_q_struct(struct_name);    
-    uint8_t buf[0x30];
-    char type_info[64];
-    if(jobj==NULL)
-        return -1;
     json_object_object_foreach(jobj, key, val){
-        //printf("%s: %s\n", key, json_object_to_json_string(val));
-        if( strcmp(key, "[structure_size]")==0)
+        if (strcmp(key, "[structure_size]") == 0)
             continue;
+
         json_object* type = json_object_array_get_idx(val, 0);
         int offset = json_object_get_int(json_object_array_get_idx(val, 1));
         int size = json_object_get_int(json_object_array_get_idx(val, 2));
   
-        strncpy(type_info, key, 63);
-        strncat(type_info, "(", 63);
-        strncat(type_info, json_object_get_string(type), 63);
-        strncat(type_info, ")", 63);
+        strncpy(type_info, key, dt_type_info_size-1);
+        strncat(type_info, "(", dt_type_info_size-1);
+        strncat(type_info, json_object_get_string(type), dt_type_info_size-1);
+        strncat(type_info, ")", dt_type_info_size-1);
 
-        printf("%-30s@%lx:\t", type_info, addr+offset);
-        int i;
-        if(size > 0x10)
-        {
-            printf("...\n");
+        monitor_printf(mon, "%-30s@%lx:\t", type_info, addr+offset);
+        if (size > 0x10) {
+            monitor_printf(mon, "...\n");
             continue;
         }
-        cpu_memory_rw_debug( cpu, addr+offset , buf, 0x30, 0 );
-        for(i=0 ; i< size; i++)
-        {
-            printf("%02x ", buf[i]);
-        }
+
+        cpu_memory_rw_debug(cpu, addr+offset , buf, dt_buf_size, 0);
+        for (i=0 ; i<size ; ++i)
+            monitor_printf(mon, "%02x ", buf[i]);
         
-        printf("\n");
+        monitor_printf(mon, "\n");
     }
+
     return 0;
 }
 
-int memfrs_get_mem_struct_content(
+
+
+extern int memfrs_get_mem_struct_content(
         CPUState   *cpu,
         uint64_t    cr3,
         uint8_t    *buffer,
@@ -722,23 +760,23 @@ int memfrs_get_mem_struct_content(
 
     va_start(vl, depth);
 
-    if(from_physical_memory){
+    if (from_physical_memory) {
 
         field_name = va_arg(vl, const char*);
         info = memfrs_q_field(struct_type, field_name+1);
 
-        if(depth==1){
+        if (depth == 1) {
             cpu_physical_memory_read(struct_addr + info->offset , buffer, len);
 
             free(info);
             va_end(vl);
             return 0;
         }
-        else if(depth>1){
+        else if (depth>1) {
             cpu_physical_memory_read( struct_addr + info->offset , &struct_addr, 8);
             depth = depth-1;
 
-            while(depth--) {
+            while (depth--) {
                 struct_type = info->jobject_type;
                 free(info);
                 field_name = va_arg(vl, const char*);
@@ -767,7 +805,7 @@ int memfrs_get_mem_struct_content(
         else
             return -1;
     }
-    else{
+    else {
         while (depth--) {
             if (info && info->is_pointer) {
                 errcode = memfrs_get_virmem_content(cpu, cr3, struct_addr, 8, (uint8_t*)&struct_addr);
@@ -796,18 +834,21 @@ int memfrs_get_mem_struct_content(
     }
 }
 
-int memfrs_get_nested_field_offset(int *out, const char *struct_type_name, int depth, ...) {
+
+
+extern int memfrs_get_nested_field_offset(int *out, const char *struct_type_name, int depth, ...) {
     json_object *struct_type;
-    va_list vl;
     field_info *info = NULL;
     const char *field_name;
     int offset = 0;
+    va_list vl;
 
     struct_type = memfrs_q_struct(struct_type_name);
     if (struct_type == NULL)
         return -1;
 
     va_start(vl, depth);
+
     // Process field query
     while (depth--) {
         field_name = va_arg(vl, const char*);
@@ -823,4 +864,67 @@ int memfrs_get_nested_field_offset(int *out, const char *struct_type_name, int d
 
     *out = offset;
     return 0;
+}
+
+
+
+extern const char* memfrs_get_last_error_message(void) {
+    switch (memfrs_errno) {
+        case MEMFRS_NO_ERR:
+            return "There is no error.";
+
+        case MEMFRS_ERR_NOT_LOADED_GLOBAL_STRUCTURE:
+            return "[ERROR] global structure has not been loaded.";
+
+        case MEMFRS_ERR_NOT_LOADED_NETWORK_STRUCTURE:
+            return "[ERROR] network structure has not been loaded.";
+
+        case MEMFRS_ERR_NOT_LOADED_STRUCTURE:
+            return "[ERROR] data structure has not been loaded.";
+
+        case MEMFRS_ERR_NOT_FOUND_KPCR:
+            return "[ERROR] KPCR can not be found.";
+
+        case MEMFRS_ERR_NOT_FOUND_GLOBAL_STRUCTURE:
+            return "[ERROR] target global structure can not be found in loaded global structure.";
+
+        case MEMFRS_ERR_NOT_FOUND_GLOBAL_STRUCTURE_INFO:
+            return "[ERROR] global structure information can not be found.";
+
+        case MEMFRS_ERR_NOT_FOUND_WINDOWS_KERNEL:
+            return "[ERROR] windows kernel can not be found.";
+
+        case MEMFRS_ERR_NOT_FOUND_KERNEL_BASE:
+            return "[ERROR] kernel base can not be found.";
+
+        case MEMFRS_ERR_NOT_FOUND_PDB_PARSER:
+            return "[ERROR] the path to PDB parser can not be found.\nPlease execute it in MBA_root/ext/memfrs/memfrs_pdbparser.";
+
+        case MEMFRS_ERR_NOT_FOUND_JSON_FIELD:
+            return "[ERROR] json field can not be found in json structure";
+
+        case MEMFRS_ERR_ALLOC_FAILED:
+            return "[ERROR] alloc memory failed.";
+
+        case MEMFRS_ERR_MEMORY_READ_FAILED:
+            return "[ERROR] CPU memory read failed.";
+
+        case MEMFRS_ERR_INVALID_MBA_MEMFRS_COMMAND:
+            return "[ERROR] invalid mba memfrs command";
+
+        case MEMFRS_ERR_INVALID_CPU:
+            return "[ERROR] invalid CPU";
+
+        case MEMFRS_ERR_INVALID_EPROCESS:
+            return "[ERROR] invalid EPROCESS.";
+
+        case MEMFRS_ERR_INVALID_JSON_OBJ:
+            return "[ERROR] invalid json object";
+
+        case MEMFRS_ERR_COMMAND_EXECUTE_FAILED:
+            return "[ERROR] command execute failed.";
+
+        default :
+            return "[ERROR] Unknow Error!";
+    }
 }

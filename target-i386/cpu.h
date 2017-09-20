@@ -1060,8 +1060,8 @@ static inline void cpu_x86_load_seg_cache(CPUX86State *env,
     }
 
 #if defined(CONFIG_MEMFRS)
-    if( g_kpcr_ptr == 0 && env->segs[5].base != 0 && memfrs_kpcr_self_check(env->segs[5].base) )
-        g_kpcr_ptr = env->segs[5].base;
+    if( memfrs_get_kpcr_ptr() == 0 && env->segs[5].base != 0 && memfrs_kpcr_self_check(env->segs[5].base) )
+        memfrs_set_kpcr_ptr( env->segs[5].base );
 #endif
 }
 

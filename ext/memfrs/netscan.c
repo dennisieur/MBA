@@ -18,12 +18,7 @@
  */
 
 #include "qemu-common.h"
-#include "monitor/monitor.h"
-#include "include/exec/cpu-common.h"
 #include "exec/cpu-all.h"
-#include "include/utarray.h"
-#include "include/uthash.h"
-#include "json-c/json.h"
 
 #include "memfrs.h"
 #include "memfrs-priv.h"
@@ -33,20 +28,26 @@
 #include "netscan.h"
 
 #define SIZE_OF_POOL_HEADER 0x10
+#define MAX_IMAGENAME_SIZE 16
+#define MAX_IP_PORT_SIZE 46
+#define TIME_SIZE 26
 
+
+// Convert port from Big Endian to Little Endian.
+// type : uint16_t to int
+#define port_convert(port) ((port%0x100)*256 + (port >> 8))
 
 
 /*********************************************************************************
-static const char* map_state_to_str(uint32_t state)
-
-mapping TCP state from state number to state string
-
-INPUT:  uint32_t state          state number
-OUTPUT: char*                   pointer to state string
+/// mapping TCP state from state number to state string
+///
+/// \param state        state number
+///
+/// return a pointer to state string
 **********************************************************************************/
 static const char* map_state_to_str(uint32_t state)
 {
-    switch(state){
+    switch (state) {
         case TCP_CLOSED:  return "CLOSED"; break;
         case TCP_LISTENING:  return "LISTENING"; break;
         case TCP_SYN_SENT:  return "SYN_SENT"; break;
@@ -67,42 +68,31 @@ static const char* map_state_to_str(uint32_t state)
 
 
 /*********************************************************************************
-static void add_network_feild_to_structure(
-        const char* protocol, 
-        uint64_t pmem, 
-        uint64_t eprocess, 
-        char* file_name, 
-        uint64_t pid, 
-        const char* state, 
-        char* local_addr, 
-        char* foreign_addr, 
-        uint64_t time, 
-        UT_array *network_list)
-
-add a network data in UT_array structure network_state
-
-INPUT:  const char* protocol    network protocol, including UDP/TCP and IPv4/IPv6
-        uint64_t pmem           physical memory address of the pool tag address
-        uint64_t eprocess       eprocess address in virtual memoey
-        char* file_name         the file name of owner process
-        uint64_t pid            the process id of owner process
-        const char* state       TCP connect state
-        char* local_addr        local address
-        char* foreign_addr      foreign address
-        char* time              windows timestamp
-        UT_array *network_list  target network_state structure
-OUTPUT: void                    nothing to output
+/// Add a network data in UT_array structure network_state
+///
+/// protocol        network protocol, including UDP/TCP and IPv4/IPv6
+/// pmem            physical memory address of the pool tag address
+/// eprocess        eprocess address in virtual memoey
+/// imagename       the image file name of owner process
+/// pid             the process id of owner process
+/// state           TCP connect state
+/// local_addr      local address
+/// foreign_addr    foreign address
+/// time            windows timestamp
+/// network_list    target network_state structure
+///
+/// return nothing
 **********************************************************************************/
 static void add_network_feild_to_structure(
-        const char* protocol, 
-        uint64_t pmem, 
-        uint64_t eprocess, 
-        char* file_name, 
-        uint64_t pid, 
-        const char* state, 
-        char* local_addr, 
-        char* foreign_addr, 
-        char* time, 
+        const char* protocol,
+        uint64_t pmem,
+        uint64_t eprocess,
+        uint8_t* imagename,
+        uint64_t pid,
+        const char* state,
+        char* local_addr,
+        char* foreign_addr,
+        char* time,
         UT_array *network_list)
 {
     network_state network_data;
@@ -116,8 +106,8 @@ static void add_network_feild_to_structure(
     // eprocess
     network_data.eprocess = eprocess;
 
-    // file name
-    network_data.file_name = file_name;
+    // image file name
+    snprintf(network_data.imagename, MAX_IMAGENAME_SIZE, "%s", imagename);
 
     // process id
     network_data.pid = pid;
@@ -126,13 +116,14 @@ static void add_network_feild_to_structure(
     network_data.state = state ? state : calloc(1, sizeof(char));
 
     // local address
-    network_data.local_addr = local_addr;
+    snprintf(network_data.local_addr, MAX_IP_PORT_SIZE, "%s", local_addr);
 
     // foreign address
-    network_data.foreign_addr = foreign_addr ;
+    snprintf(network_data.foreign_addr, MAX_IP_PORT_SIZE, "%s", foreign_addr);
 
     // createtime
-    network_data.time = time;
+    snprintf(network_data.time, TIME_SIZE-1, "%s", time);
+    network_data.time[TIME_SIZE-1] = '\0';
 
     utarray_push_back(network_list, &network_data);
 }
@@ -140,223 +131,177 @@ static void add_network_feild_to_structure(
 
 
 /*********************************************************************************
-static char* port_convert(uint64_t time)
-
-Convert windows time to timestamp
-
-INPUT:  uint64_t port           windows time
-OUTPUT: char*                   pointer to char array, stored timestamp
+/// Convert windows time to timestamp
+///
+/// \param port     windows time
+///
+/// return a pointer to char array, stored timestamp
 **********************************************************************************/
 static char* windows_timestamp_convert(uint64_t time)
 {
-    char *return_time;
-    char *time_tmp;
-    int i;
-    double second=0;
-    time_t windows_time=0;
+    double second;
+    time_t windows_time;
 
     // convert time to seconds
     second = time/10000000.0;
 
-    // convert NTP time to Windows time
-    /*
-       ntp time begin from 1601 but windows time begin from 1970
-       11644473600 is number of seconds from 1601 to 1970
-    */
+    // # Convert NTP time to Windows time
+    // ntp time begin from 1601 but Windows time begin from 1970
+    // 11644473600 is number of seconds from 1601 to 1970
     windows_time = second-11644473600;
 
     // convert seconds to timestamp
-    time_tmp = ctime(&windows_time);
-    return_time = (char*)malloc(26);
-    for(i=0;i<25;i=i+1)
-        return_time[i] = time_tmp[i];
-    return_time[25]='\0';
-
-    return return_time;
+    return ctime(&windows_time);
 }
 
 
 
 /*********************************************************************************
-static char* port_convert(uint16_t port)
-
-Convert port from Big Endian to Little Endian.
-
-INPUT:  uint16_t port           port in Big Endian
-OUTPUT: char*                   pointer to char array, stored port in Little Endian
+/// Parse IPv6 data from virtual address
+///
+/// \param addr_ptr     an virtual memory address of IPv4 address 
+/// \param port         port in Big Endian type
+/// \param cpu          pointer to current cpu
+///
+/// return a pointer to char array, stored IPv4 string
 **********************************************************************************/
-static char* port_convert(uint16_t port)
+static int IPv6_to_str(char *addr, uint64_t addr_ptr, uint16_t port, CPUState *cpu)
 {
-    char* s_port;
-    s_port = (char*)malloc(6);
-    memset(s_port, 0, 6);
-
-    snprintf(s_port, 6, "%d", (port%0x100)*256+(port>>8));
-
-    return s_port;
-}
-
-
-
-/*********************************************************************************
-static char* IPv6_to_str(uint64_t addr_ptr, uint16_t port, CPUState *cpu)
-
-Parse IPv6 data from virtual address
-
-INPUT:  uint64_t addr_ptr       an virtual memory address of IPv4 address 
-        uint16_t port           port in Big Endian type
-        CPUState *cpu           pointer to current cpu
-OUTPUT: char*                   pointer to char array, stored IPv4 string
-**********************************************************************************/
-static char* IPv6_to_str(uint64_t addr_ptr, uint16_t port, CPUState *cpu)
-{
-    char* addr;
-    uint64_t j;
+    uint64_t i;
     uint8_t addr_v6;
-    addr = (char*)malloc(48);
-    memset(addr, 0, 48);
 
-    for(j=0;j<0x10;j=j+0x1){
-        if(cpu_memory_rw_debug(cpu, addr_ptr+j, (uint8_t*)&addr_v6, 2, 0)!=0)
-            return NULL;
-        if(j%2==0)
-            sprintf(addr, "%s%"PRIx16, addr, addr_v6);
+    // the ipv6 address stored in virtual memory is 2*8 bytes
+    for (i=0 ; i<0x10 ; ++i) {
+        // the ipv6 address stored in virtual memory is spilited by 2 bytes
+        if (cpu_memory_rw_debug(cpu, addr_ptr+i, (uint8_t*)&addr_v6, 2, 0) != 0)
+            return -1;
+        if (i%2 == 0)
+            snprintf(addr+strlen(addr), MAX_IP_PORT_SIZE-strlen(addr), "%"PRIx16, addr_v6);
         else
-            sprintf(addr, "%s%"PRIx16":", addr, addr_v6);
+            snprintf(addr+strlen(addr), MAX_IP_PORT_SIZE-strlen(addr), "%"PRIx16":", addr_v6);
     }
 
-    sprintf(addr, "%s%s", addr, port_convert(port));
-
-    return addr;
+    snprintf(addr+strlen(addr), MAX_IP_PORT_SIZE-strlen(addr), "%d", port_convert(port));
+    return 0;
 }
 
 
 
 /*********************************************************************************
-static char* IPv4_to_str(uint64_t addr_ptr, uint16_t port, CPUState *cpu)
-
-Parse IPv4 data from virtual address
-
-INPUT:  uint64_t addr_ptr       an virtual memory address of IPv4 address 
-        uint16_t port           port in Big Endian type
-        CPUState *cpu           pointer to current cpu
-OUTPUT: char*                   pointer to char array, stored IPv4 string
+/// Parse IPv4 data from virtual address
+///
+/// \param addr_ptr     an virtual memory address of IPv4 address 
+/// \param port         port in Big Endian type
+/// \param cpu          pointer to current cpu
+///
+/// return a pointer to char array, stored IPv4 string
 **********************************************************************************/
-static char* IPv4_to_str(uint64_t addr_ptr, uint16_t port, CPUState *cpu)
+static int IPv4_to_str(char *addr, uint64_t addr_ptr, uint16_t port, CPUState *cpu)
 {
-    char* addr;
     int i;
     uint32_t addr_v4;
-    addr = (char*)malloc(22);
-    memset(addr, 0, 22);
 
-    if(cpu_memory_rw_debug(cpu, addr_ptr, (uint8_t*)&addr_v4, 4, 0)!=0)
-        return NULL;
-    for(i=0;i<4;i++){
-        sprintf(addr, "%s%d.", addr, addr_v4%0x100);
-        addr_v4=addr_v4>>8;
+    // the ipv4 address stored in virtual memory is 4 bytes
+    if (cpu_memory_rw_debug(cpu, addr_ptr, (uint8_t*)&addr_v4, 4, 0) != 0)
+        return -1;
+    for (i=0 ; i<4 ; ++i) {
+        snprintf(addr+strlen(addr), MAX_IP_PORT_SIZE-strlen(addr), "%d.", addr_v4%256);
+        addr_v4 = addr_v4>>8;
     }
 
     addr[strlen(addr)-1]=':';
-    sprintf(addr, "%s%s", addr, port_convert(port));
+    snprintf(addr+strlen(addr), MAX_IP_PORT_SIZE-strlen(addr), "%d", port_convert(port));
 
-    return addr;
+    return 0;
 }
 
 
 
 /*********************************************************************************
-static void parse_TcpL(int offset_tag, uint64_t pmem, UT_array *network_list, CPUState *cpu)
-
-Parse the whole Tcp Listening datas if found pool tag "TcpL" in physical memory
-
-INPUT:  int offset_tag          offset from pool header to pool tag
-        uint64_t pmem           physical address
-        UT_array *network_list  pointer to network list, its a UT_array of structure "networt_state"
-        CPUState *cpu           pointer to current cpu
-OUTPUT: void                    nothing to return
+/// Parse the whole Tcp Listening datas if found pool tag "TcpL" in physical memory
+///
+/// \param offset_tag       offset from pool header to pool tag
+/// \param pmem             physical address
+/// \param network_list     pointer to network list, its a UT_array of structure "networt_state"
+/// \param cpu              pointer to current cpu
+///
+/// return nothing
 **********************************************************************************/
 static void parse_TcpL(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_list, CPUState *cpu)
 {
-    uint64_t addr1, addr2;
+    uint64_t addr1,
+             addr2;
 
     uint8_t AF;
     uint16_t port_local;
-    uint64_t eprocess_ptr, processid, time;
-    char *addr=NULL, *addr_foreign=NULL;
-    uint8_t file_name_buf[16];
-    char *file_name;
+    uint64_t eprocess_ptr,
+             processid,
+             time;
+    char addr[MAX_IP_PORT_SIZE] = {0},
+         addr_foreign[MAX_IP_PORT_SIZE] = {0};
+    uint8_t imagename[MAX_IMAGENAME_SIZE];
 
     // InetAF
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&AF, sizeof(AF), pool_body_ptr, true, "_TCP_LISTENER", 2, "*InetAF", "#AddressFamily")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&AF, sizeof(AF), pool_body_ptr, true, "_TCP_LISTENER", 2, "*InetAF", "#AddressFamily") != 0)
         return;
 
     // Owner
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), pool_body_ptr, true, "_TCP_LISTENER", 1, "*Owner")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), pool_body_ptr, true, "_TCP_LISTENER", 1, "*Owner") != 0)
         return;
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&processid, sizeof(processid), eprocess_ptr, false, "_EPROCESS", 1, "#UniqueProcessId")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&processid, sizeof(processid), eprocess_ptr, false, "_EPROCESS", 1, "#UniqueProcessId") != 0)
         return;
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)file_name_buf, sizeof(file_name_buf), eprocess_ptr, false, "_EPROCESS", 1, "#ImageFileName")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)imagename, sizeof(imagename), eprocess_ptr, false, "_EPROCESS", 1, "#ImageFileName") != 0)
         return;
-    file_name = (char*)malloc(16);
-    snprintf(file_name, 16, "%s", file_name_buf);
+    imagename[MAX_IMAGENAME_SIZE-1] = '\0';
 
     // CreateTime
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&time, sizeof(time), pool_body_ptr, true, "_TCP_LISTENER", 1, "#CreateTime")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&time, sizeof(time), pool_body_ptr, true, "_TCP_LISTENER", 1, "#CreateTime") != 0)
         return;
 
     // Local port
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&port_local, sizeof(port_local), pool_body_ptr, true, "_TCP_LISTENER", 1, "#Port")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&port_local, sizeof(port_local), pool_body_ptr, true, "_TCP_LISTENER", 1, "#Port") != 0)
         return;
 
 
     // is_valid
-    if(eprocess_ptr<0xffff000000000000 || processid==0 || processid>65535 || port_local ==0x0000)
+    if (eprocess_ptr<0xffff000000000000 || processid==0 || processid>65535 || port_local==0)
         return;
 
 
     // Address
-    if(AF==AF_INET){
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_LISTENER", 1, "*LocalAddr")!=0){
+    if (AF == AF_INET) {
+        // Local address
+        if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_LISTENER", 1, "*LocalAddr") != 0)
             return;
-        }
-        else if(addr1==0x0000000000000000){
-            addr = (char*)malloc(14);
-            sprintf(addr, "0.0.0.0:%s", port_convert(port_local));
-        }
-        else if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS", 1, "*pData")!=0){
+        else if (addr1 == 0x0000000000000000)
+            snprintf(addr, MAX_IP_PORT_SIZE, "0.0.0.0:%d", port_convert(port_local));
+        else if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS", 1, "*pData") != 0)
             return;
-        }
-        else{
-            addr = IPv4_to_str(addr2+0x28, port_local, cpu);
-            if(addr==NULL)
-                return;
-        }
-        addr_foreign = (char*)malloc(10);
-        memset(addr_foreign, 0, 10);
-        sprintf(addr_foreign, "0.0.0.0:0");
-        add_network_feild_to_structure("TCPv4", pmem, eprocess_ptr, file_name, processid, "LISTENING", addr, addr_foreign, windows_timestamp_convert(time), network_list);
+        // 0x28 is a magic number for the offset from ip address to pData
+        else if (IPv4_to_str(addr, addr2+0x28, port_local, cpu) == -1)
+            return;
+
+        // Foreign address
+        snprintf(addr_foreign, MAX_IP_PORT_SIZE, "0.0.0.0:0");
+
+        add_network_feild_to_structure("TCPv4", pmem, eprocess_ptr, imagename, processid, "LISTENING", addr, addr_foreign, windows_timestamp_convert(time), network_list);
     }
-    else if(AF==AF_INET6){
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_LISTENER", 1, "*LocalAddr")!=0){
+    else if (AF == AF_INET6) {
+        // Local address
+        if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_LISTENER", 1, "*LocalAddr") != 0)
             return;
-        }
-        else if(addr1==0x0000000000000000){
-            addr = (char*)malloc(22);
-            sprintf(addr, "0.0.0.0.0.0.0.0:%s", port_convert(port_local));
-        }
-        else if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS", 1, "*pData")!=0){
+        else if (addr1 == 0x0000000000000000)
+            snprintf(addr, MAX_IP_PORT_SIZE, "0.0.0.0.0.0.0.0:%d", port_convert(port_local));
+        else if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS", 1, "*pData") != 0)
             return;
-        }
-        else{
-            addr = IPv6_to_str(addr2+0x28, port_local, cpu);
-            if(addr==NULL)
+        // 0x28 is a magic number for the offset from ip address to pData
+        else if (IPv6_to_str(addr, addr2+0x28, port_local, cpu) == -1)
                 return;
-        }
-        addr_foreign = (char*)malloc(10);
-        memset(addr_foreign, 0, 10);
-        sprintf(addr_foreign, "0.0.0.0:0");
-        add_network_feild_to_structure("TCPv6", pmem, eprocess_ptr, file_name, processid, "LISTENING", addr, addr_foreign, windows_timestamp_convert(time), network_list);
+
+        // Foreign address
+        snprintf(addr_foreign, MAX_IP_PORT_SIZE, "0.0.0.0:0");
+
+        add_network_feild_to_structure("TCPv6", pmem, eprocess_ptr, imagename, processid, "LISTENING", addr, addr_foreign, windows_timestamp_convert(time), network_list);
     }
     else{
         return;
@@ -366,31 +311,35 @@ static void parse_TcpL(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_
 
 
 /*********************************************************************************
-static void parse_TcpE(int offset_tag, uint64_t pmem, UT_array *network_list, CPUState *cpu)
-
-Parse the whole Tcp Endpoint datas if found pool tag "TcpE" in physical memory
-
-INPUT:  int offset_tag          offset from pool header to pool tag
-        uint64_t pmem           physical address
-        UT_array *network_list  pointer to network list, its a UT_array of structure "networt_state"
-        CPUState *cpu           pointer to current cpu
-OUTPUT: void                    nothing to return
+/// Parse the whole Tcp Endpoint datas if found pool tag "TcpE" in physical memory
+///
+/// \param offset_tag       offset from pool header to pool tag
+/// \param pmem             physical address
+/// \param network_list     pointer to network list, its a UT_array of structure "networt_state"
+/// \param cpu              pointer to current cpu
+///
+/// return nothing
 **********************************************************************************/
 static void parse_TcpE(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_list, CPUState *cpu)
 {
     uint64_t addr1;
 
     uint8_t AF;
-    uint32_t state=0;
-    uint16_t port_local, port_foreign;
-    uint64_t eprocess_ptr, processid, time;
-    char *addr=NULL, *addr_foreign=NULL;
+    uint32_t state;
+    uint16_t port_local,
+             port_foreign;
+    uint64_t eprocess_ptr,
+             processid,
+             time;
+    char addr[MAX_IP_PORT_SIZE] = {0},
+         addr_foreign[MAX_IP_PORT_SIZE] = {0};
     const char* state_str;
-    uint8_t file_name_buf[16];
-    char *file_name;
+    uint8_t imagename[MAX_IMAGENAME_SIZE];
 
-    int offset_local_addr4_to_INADDR, offset_local_addr6_to_INADDR,
-        offset_remote_addr4_to_INADDR, offset_remote_addr6_to_INADDR;
+    int offset_local_addr4_to_INADDR,
+        offset_local_addr6_to_INADDR,
+        offset_remote_addr4_to_INADDR,
+        offset_remote_addr6_to_INADDR;
 
     memfrs_get_nested_field_offset(&offset_local_addr4_to_INADDR, "_IN_ADDR_WIN10_TCPE", 1, "addr4");
     memfrs_get_nested_field_offset(&offset_local_addr6_to_INADDR, "_IN_ADDR_WIN10_TCPE", 1, "addr6");
@@ -398,77 +347,73 @@ static void parse_TcpE(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_
     memfrs_get_nested_field_offset(&offset_remote_addr6_to_INADDR, "_IN_ADDR", 1, "addr6");
 
     // InetAF
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&AF, sizeof(AF), pool_body_ptr, true, "_TCP_ENDPOINT", 2, "*InetAF", "#AddressFamily")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&AF, sizeof(AF), pool_body_ptr, true, "_TCP_ENDPOINT", 2, "*InetAF", "#AddressFamily") != 0)
         return;
 
     // Owner
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "*Owner")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "*Owner") != 0)
         return;
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&processid, sizeof(processid), eprocess_ptr, false, "_EPROCESS", 1, "#UniqueProcessId")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&processid, sizeof(processid), eprocess_ptr, false, "_EPROCESS", 1, "#UniqueProcessId") != 0)
         return;
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)file_name_buf, sizeof(file_name_buf), eprocess_ptr, false, "_EPROCESS", 1, "#ImageFileName")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)imagename, sizeof(imagename), eprocess_ptr, false, "_EPROCESS", 1, "#ImageFileName") != 0)
         return;
-    file_name = (char*)malloc(16);
-    snprintf(file_name, 16, "%s", file_name_buf);
+    imagename[MAX_IMAGENAME_SIZE-1] = '\0';
 
     // CreateTime
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&time, sizeof(time), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#CreateTime")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&time, sizeof(time), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#CreateTime") != 0)
         return;
 
     // Local port
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&port_local, sizeof(port_local), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#LocalPort")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&port_local, sizeof(port_local), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#LocalPort") != 0)
         return;
 
     // Local foreign
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&port_foreign, sizeof(port_foreign), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#RemotePort")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&port_foreign, sizeof(port_foreign), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#RemotePort") != 0)
         return;
 
     // state
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&state, sizeof(state), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#State")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&state, sizeof(state), pool_body_ptr, true, "_TCP_ENDPOINT", 1, "#State") != 0)
         return;
     state_str = map_state_to_str(state);
 
 
-    // isvalid
-    if(eprocess_ptr<=0xffff000000000000 || processid==0 || processid>65535 || port_local ==0x0000 || port_foreign==0x0000)
+    // is_valid
+    if (eprocess_ptr<=0xffff000000000000 || processid==0 || processid>65535 || port_local==0 || port_foreign==0)
         return;
 
 
     // Address
-    if(AF==AF_INET){
+    if (AF == AF_INET) {
         // Local address
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 3, "*AddrInfo", "*Local", "*pData")!=0)
+        if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 3, "*AddrInfo", "*Local", "*pData") != 0)
             return;
-        addr = IPv4_to_str(addr1+offset_local_addr4_to_INADDR, port_local, cpu);
-        if(addr==NULL)
+        else if (IPv4_to_str(addr, addr1+ offset_local_addr4_to_INADDR, port_local, cpu) == -1)
             return;
 
         // Foreign address
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 2, "*AddrInfo", "*Remote")!=0)
+        else if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 2, "*AddrInfo", "*Remote") != 0)
             return;
-        addr_foreign = IPv4_to_str(addr1+offset_remote_addr4_to_INADDR, port_foreign, cpu);
-        if(addr_foreign==NULL)
+        else if (IPv4_to_str(addr_foreign, addr1+ offset_remote_addr4_to_INADDR, port_foreign, cpu) == -1)
             return;
-        add_network_feild_to_structure("TCPv4", pmem, eprocess_ptr, file_name, processid, state_str, addr, addr_foreign, windows_timestamp_convert(time), network_list);
-    }
-    else if(AF==AF_INET6){
 
+        add_network_feild_to_structure("TCPv4", pmem, eprocess_ptr, imagename, processid, state_str, addr, addr_foreign, windows_timestamp_convert(time), network_list);
+    }
+    else if (AF == AF_INET6) {
         // Local address
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 3, "*AddrInfo", "*Local", "*pData")!=0)
+        if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 3, "*AddrInfo", "*Local", "*pData") != 0)
             return;
-        addr = IPv6_to_str(addr1+offset_local_addr6_to_INADDR, port_local, cpu);
-        if(addr==NULL)
+        else if (IPv6_to_str(addr, addr1+ offset_local_addr6_to_INADDR, port_local, cpu) == -1)
             return;
 
         // Foreign address
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 2, "*AddrInfo", "*Remote")!=0)
+        else if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_TCP_ENDPOINT", 2, "*AddrInfo", "*Remote") != 0)
             return;
-        addr_foreign = IPv6_to_str(addr1+offset_remote_addr6_to_INADDR, port_foreign, cpu);
-        if(addr_foreign==NULL)
+        else if (IPv6_to_str(addr_foreign, addr1+ offset_remote_addr6_to_INADDR, port_foreign, cpu) == -1)
             return;
-        add_network_feild_to_structure("TCPv6", pmem, eprocess_ptr, file_name, processid, state_str, addr, addr_foreign, windows_timestamp_convert(time), network_list);
+
+        add_network_feild_to_structure("TCPv6", pmem, eprocess_ptr, imagename, processid, state_str, addr, addr_foreign, windows_timestamp_convert(time), network_list);
     }
-    else{
+    else {
         return;
     }
 }
@@ -476,15 +421,14 @@ static void parse_TcpE(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_
 
 
 /*********************************************************************************
-static void parse_UdpA(int offset_tag, uint64_t pmem, UT_array *network_list, CPUState *cpu)
-
-Parse the whole Udp datas if found pool tag "UdpA" in physical memory
-
-INPUT:  int offset_tag          offset from pool header to pool tag
-        uint64_t pmem           physical address
-        UT_array *network_list  pointer to network list, its a UT_array of structure "networt_state"
-        CPUState *cpu           pointer to current cpu
-OUTPUT: void                    nothing to return
+/// Parse the whole Udp datas if found pool tag "UdpA" in physical memory
+///
+/// \param offset_tag       offset from pool header to pool tag
+/// \param pmem             physical address
+/// \param network_list     pointer to network list, its a UT_array of structure "networt_state"
+/// \param cpu              pointer to current cpu
+///
+/// return nothing
 **********************************************************************************/
 static void parse_UdpA(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_list, CPUState *cpu)
 {
@@ -492,138 +436,125 @@ static void parse_UdpA(uint64_t pool_body_ptr, uint64_t pmem, UT_array *network_
 
     uint8_t AF;
     uint16_t port_local;
-    uint64_t eprocess_ptr, processid, time;
-    char* addr=NULL, *addr_foreign=NULL;
-    uint8_t file_name_buf[16];
-    char *file_name;
+    uint64_t eprocess_ptr,
+             processid,
+             time;
+    char addr[MAX_IP_PORT_SIZE] = {0},
+         addr_foreign[MAX_IP_PORT_SIZE] = {0};
+    uint8_t imagename[MAX_IMAGENAME_SIZE];
 
     // InetAF
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&AF, sizeof(AF), pool_body_ptr, true, "_UDP_ENDPOINT", 2, "*InetAF", "#AddressFamily")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&AF, sizeof(AF), pool_body_ptr, true, "_UDP_ENDPOINT", 2, "*InetAF", "#AddressFamily") != 0)
         return;
 
     // Owner
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "*Owner")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&eprocess_ptr, sizeof(eprocess_ptr), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "*Owner") != 0)
         return;
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&processid, sizeof(processid), eprocess_ptr, false, "_EPROCESS", 1, "#UniqueProcessId")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&processid, sizeof(processid), eprocess_ptr, false, "_EPROCESS", 1, "#UniqueProcessId") != 0)
         return;
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)file_name_buf, sizeof(file_name_buf), eprocess_ptr, false, "_EPROCESS", 1, "#ImageFileName")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)imagename, sizeof(imagename), eprocess_ptr, false, "_EPROCESS", 1, "#ImageFileName") != 0)
         return;
-    file_name = (char*)malloc(16);
-    snprintf(file_name, 16, "%s", file_name_buf);
+    imagename[MAX_IMAGENAME_SIZE-1] = '\0';
 
     // CreateTime
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&time, sizeof(time), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "#CreateTime")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&time, sizeof(time), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "#CreateTime") != 0)
         return;
 
     // Local port
-    if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&port_local, sizeof(port_local), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "#Port")!=0)
+    if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&port_local, sizeof(port_local), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "#Port") != 0)
         return;
 
 
     // is_valid
-    if(eprocess_ptr<0xffff000000000000 || processid==0 || processid>65535 || port_local ==0x0000)
+    if (eprocess_ptr<0xffff000000000000 || processid==0 || processid>65535 || port_local==0)
         return;
 
 
     // Address
-    if(AF==AF_INET){
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "*LocalAddr")!=0){
+    if (AF == AF_INET) {
+        // Local address
+        if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "*LocalAddr") != 0)
             return;
-        }
-        else if(addr1==0x0000000000000000){
-            addr = (char*)malloc(14);
-            sprintf(addr, "0.0.0.0:%s", port_convert(port_local));
-        }
-        else if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS_WIN10_UDP", 1, "*pData")!=0){
+        else if (addr1 == 0x0000000000000000)
+            snprintf(addr, MAX_IP_PORT_SIZE, "0.0.0.0:%d", port_convert(port_local));
+        else if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS_WIN10_UDP", 1, "*pData") != 0)
             return;
-        }
-        else{
-            addr = IPv4_to_str(addr2, port_local, cpu);
-            if(addr==NULL)
-                return;
-        }
-        addr_foreign = (char*)malloc(4);
-        memset(addr_foreign, 0, 4);
-        sprintf(addr_foreign, "*:*");
-        add_network_feild_to_structure("UDPv4", pmem, eprocess_ptr, file_name, processid, NULL, addr, addr_foreign, windows_timestamp_convert(time), network_list);
+        else if (IPv4_to_str(addr, addr2, port_local, cpu) == -1)
+            return;
+
+        // Foreign address
+        snprintf(addr_foreign, MAX_IP_PORT_SIZE, "*:*");
+
+        add_network_feild_to_structure("UDPv4", pmem, eprocess_ptr, imagename, processid, NULL, addr, addr_foreign, windows_timestamp_convert(time), network_list);
     }
-    else if(AF==AF_INET6){
-        if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "*LocalAddr")!=0){
+    else if (AF == AF_INET6) {
+        // Local address
+        if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr1, sizeof(addr1), pool_body_ptr, true, "_UDP_ENDPOINT", 1, "*LocalAddr") != 0)
             return;
-        }
-        else if(addr1==0x0000000000000000){
-            addr = (char*)malloc(22);
-            sprintf(addr, "0.0.0.0.0.0.0.0:%s", port_convert(port_local));
-        }
-        else if(memfrs_get_mem_struct_content( cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS_WIN10_UDP", 1, "*pData")!=0){
+        else if (addr1 == 0x0000000000000000)
+            snprintf(addr, MAX_IP_PORT_SIZE, "0.0.0.0.0.0.0.0:%d", port_convert(port_local));
+        else if (memfrs_get_mem_struct_content(cpu, 0, (uint8_t*)&addr2, sizeof(addr2), addr1, false, "_LOCAL_ADDRESS_WIN10_UDP", 1, "*pData") != 0)
             return;
-        }
-        else{
-            addr = IPv6_to_str(addr2, port_local, cpu);
-            if(addr==NULL)
-                return;
-        }
-        addr_foreign = (char*)malloc(4);
-        memset(addr_foreign, 0, 4);
-        sprintf(addr_foreign, "*:*");
-        add_network_feild_to_structure("UDPv6", pmem, eprocess_ptr, file_name, processid, NULL, addr, addr_foreign, windows_timestamp_convert(time), network_list);
+        else if (IPv6_to_str(addr, addr2, port_local, cpu) == -1)
+            return;
+
+        // Foreign address
+        snprintf(addr_foreign, MAX_IP_PORT_SIZE, "*:*");
+
+        add_network_feild_to_structure("UDPv6", pmem, eprocess_ptr, imagename, processid, NULL, addr, addr_foreign, windows_timestamp_convert(time), network_list);
     }
-    else{
+    else {
         return;
     }
 }
 
 
 
-static void network_dtor(void *_elt) {
-    network_state *elt = (network_state*)_elt;
+UT_icd network_icd = {sizeof(network_state), NULL, NULL, NULL};
 
-    if(elt->local_addr) free(elt->local_addr);
-    if(elt->foreign_addr) free(elt->foreign_addr);
-}
-UT_icd network_icd = {sizeof(network_state), NULL, NULL, network_dtor };
-/*********************************************************************************
-UT_array memfrs_scan_network(CPUState *cpu)
 
-Scan the whole physical memory for network pool tag, and list all the network state.
-
-INPUT:  CPUState *cpu            pointer to current cpu
-OUTPUT: UT_array*                return a UT_array with handles types
-**********************************************************************************/
 extern UT_array* memfrs_scan_network(CPUState *cpu)
 {
-    UT_array *network_list=NULL;
+    UT_array *network_list = NULL;
 
-    uint64_t pmem, pool_body_ptr;
-    int offset_tag;
+    uint64_t pmem,
+             pool_body_ptr;
     uint8_t* pool_tag;
+    size_t length_pool_tag;
+    int offset_tag;
     json_object *test_obj;
-    printf("Scan for network patterns.\n" );
+
 
     // Size of pool tag "UdpA", "TcpL", "TcpE" is the same
-    pool_tag = (uint8_t*)malloc(strlen(POOL_TAG_UDP_ENDPOINT));
-    //pooltag = (uint8_t*)malloc(strlen(POOL_TAG_TCP_ENDPOINT));
-    //pooltag = (uint8_t*)malloc(strlen(POOL_TAG_TCP_LISTENER));
+    length_pool_tag = strlen(POOL_TAG_UDP_ENDPOINT);
+    //length_pool_tag = strlen(POOL_TAG_TCP_ENDPOINT);
+    //length_pool_tag = strlen(POOL_TAG_TCP_LISTENER);
+    pool_tag = (uint8_t*)malloc(length_pool_tag);
+
 
     // Check if network ds metadata is already loaded
     json_object_object_get_ex(g_struct_info, "_TCP_LISTENER", &test_obj);
-    if(test_obj==NULL){
-        printf("Network data structure information is not loaded\n");
+    if (test_obj == NULL) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_NETWORK_STRUCTURE;
+        free(pool_tag);
         return NULL;
     }
     json_object_object_get_ex(g_struct_info, "_TCP_ENDPOINT", &test_obj);
-    if(test_obj==NULL){
-        printf("Network data structure information is not loaded\n");
+    if (test_obj == NULL) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_NETWORK_STRUCTURE;
+        free(pool_tag);
         return NULL;
     }
     json_object_object_get_ex(g_struct_info, "_UDP_ENDPOINT", &test_obj);
-    if(test_obj==NULL){
-        printf("Network data structure information is not loaded\n");
+    if (test_obj == NULL) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_NETWORK_STRUCTURE;
+        free(pool_tag);
         return NULL;
     }
-    // Check if ds metadata is already loaded
-    if( memfrs_check_struct_info() == 0){
-        printf("Data structure information is not loaded\n");
+    // Check if the data structure information is already loaded
+    if (memfrs_check_struct_info() == 0) {
+        memfrs_errno = MEMFRS_ERR_NOT_LOADED_STRUCTURE;
+        free(pool_tag);
         return NULL;
     }
     else{
@@ -631,32 +562,33 @@ extern UT_array* memfrs_scan_network(CPUState *cpu)
     }
 
 
-    utarray_new( network_list, &network_icd);
+    utarray_new(network_list, &network_icd);
+
+
     //Scan whole physical memory
-    for(pmem = 0; pmem < MAXMEM-strlen(POOL_TAG_UDP_ENDPOINT); pmem++)
-    {
-        if(pmem%0x10000000==0x0)
-            printf("Scan physical address: 0x%"PRIx64"\n", pmem);
+    for (pmem = 0 ; pmem < MAXMEM-length_pool_tag ; ++pmem) {
+        //if(pmem%0x10000000==0x0)
+            //printf("Scan physical address: 0x%"PRIx64"\n", pmem);
 
         // Read tag
-        cpu_physical_memory_read(pmem, pool_tag, strlen(POOL_TAG_UDP_ENDPOINT));
+        cpu_physical_memory_read(pmem, pool_tag, length_pool_tag);
 
-        pool_body_ptr = pmem-offset_tag+SIZE_OF_POOL_HEADER;
+        // pool body address
+        pool_body_ptr = pmem- offset_tag+ SIZE_OF_POOL_HEADER;
 
-        // UdpA
-        if(memcmp( pool_tag, POOL_TAG_UDP_ENDPOINT, strlen(POOL_TAG_UDP_ENDPOINT))==0)
+        // UdpA (UDP Endpoint)
+        if (memcmp(pool_tag, POOL_TAG_UDP_ENDPOINT, length_pool_tag) == 0)
             parse_UdpA(pool_body_ptr, pmem-offset_tag, network_list, cpu);
         // TCP EndPoint
-        else if(memcmp( pool_tag, POOL_TAG_TCP_ENDPOINT, strlen(POOL_TAG_TCP_ENDPOINT))==0)
+        else if (memcmp(pool_tag, POOL_TAG_TCP_ENDPOINT, length_pool_tag) == 0)
             parse_TcpE(pool_body_ptr, pmem-offset_tag, network_list, cpu);
         // TCP Listening
-        else if(memcmp( pool_tag, POOL_TAG_TCP_LISTENER, strlen(POOL_TAG_TCP_LISTENER))==0)
+        else if (memcmp(pool_tag, POOL_TAG_TCP_LISTENER, length_pool_tag) == 0)
             parse_TcpL(pool_body_ptr, pmem-offset_tag, network_list, cpu);
         else
             continue;
-
-        fflush(stdout);
     }
 
+    free(pool_tag);
     return network_list;
 }
